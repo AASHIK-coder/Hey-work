@@ -684,10 +684,14 @@ mod storage_cmd {
 
 mod voice_cmd {
     use crate::voice::{VoiceSession, PushToTalkSession};
+    #[cfg(target_os = "macos")]
     use crate::get_screen_info;
+    #[cfg(target_os = "macos")]
     use crate::panels;
     use std::sync::Arc;
-    use tauri::{State, Manager, Emitter};
+    use tauri::{State, Emitter};
+    #[cfg(target_os = "macos")]
+    use tauri::Manager;
 
     pub struct VoiceState {
         pub session: Arc<VoiceSession>,
@@ -698,6 +702,14 @@ mod voice_cmd {
         pub screenshot: std::sync::Mutex<Option<String>>,
         pub mode: std::sync::Mutex<Option<String>>,
         pub current_session_id: std::sync::Mutex<u64>,
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn capture_screenshot_fallback() -> Option<String> {
+        match crate::computer::ComputerControl::new() {
+            Ok(control) => control.take_screenshot().ok(),
+            Err(_) => None,
+        }
     }
 
     #[tauri::command]
@@ -751,9 +763,7 @@ mod voice_cmd {
             }
             #[cfg(not(target_os = "macos"))]
             {
-                computer::ComputerControl::new()
-                    .ok()
-                    .and_then(|c| c.take_screenshot().ok())
+                capture_screenshot_fallback()
             }
         } else {
             None
@@ -922,9 +932,7 @@ fn main() {
                                     }
                                     #[cfg(not(target_os = "macos"))]
                                     {
-                                        computer::ComputerControl::new()
-                                            .ok()
-                                            .and_then(|c| c.take_screenshot().ok())
+                                        capture_screenshot_fallback()
                                     }
                                 } else {
                                     None
@@ -1055,9 +1063,7 @@ fn main() {
                             }
                             #[cfg(not(target_os = "macos"))]
                             {
-                                computer::ComputerControl::new()
-                                    .ok()
-                                    .and_then(|c| c.take_screenshot().ok())
+                                capture_screenshot_fallback()
                             }
                         };
 
