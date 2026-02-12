@@ -29,7 +29,7 @@ jobs:
         run: npm ci
 
       - name: Build release bundles
-        run: npm run tauri build -- --bundles nsis,msi
+        run: npm run tauri build -- --bundles nsis,msi --config src-tauri/tauri.windows.conf.json
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2

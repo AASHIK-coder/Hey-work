@@ -1330,19 +1330,21 @@ fn main() {
                 }
             }
 
-            // ── Windows / Linux: show main window at startup ──
+            // ── Windows / Linux: ensure main window is visible at startup ──
+            // The Windows config (tauri.windows.conf.json) creates the window with
+            // visible:true, transparent:false, skipTaskbar:false.
+            // This block ensures the window is centered and focused on startup.
             #[cfg(not(target_os = "macos"))]
             {
                 if let Some(window) = app.get_webview_window("main") {
                     println!("[heywork] Windows: Initializing main window");
-                    // Make window visible in taskbar so users can find it
                     let _ = window.set_skip_taskbar(false);
-                    // Start with a reasonable size (frontend will resize via set_window_state)
-                    let _ = window.set_size(tauri::LogicalSize::new(480.0, 500.0));
                     let _ = window.center();
                     let _ = window.show();
                     let _ = window.set_focus();
-                    println!("[heywork] Windows: Main window shown");
+                    println!("[heywork] Windows: Main window shown and focused");
+                } else {
+                    eprintln!("[heywork] ERROR: Could not find main window on startup!");
                 }
             }
 

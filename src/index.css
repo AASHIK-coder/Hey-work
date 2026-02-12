@@ -35,15 +35,16 @@
 html, body, #root {
   height: 100%;
   overflow: hidden;
-  background: transparent !important;
-  background-color: transparent !important;
+  /* Default: dark background for Windows (non-transparent window).
+     On macOS, native panel code injects CSS to override to transparent. */
+  background: #000000;
+  background-color: #000000;
 }
 
 /* #root starts with no clipping — MainWindow.tsx toggles this per mode */
 #root {
   border-radius: 0;
   overflow: visible;
-  background: transparent !important;
 }
 
 /* mini window needs no border radius or overflow clipping for transparent orb */

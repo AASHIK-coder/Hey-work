@@ -1,20 +1,23 @@
 <!DOCTYPE html>
-<html lang="en" style="background: transparent !important; background-color: transparent !important;">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hey work</title>
     <style>
-      /* Force transparency at the highest priority — loaded before any framework CSS */
+      /*
+        Default: dark background so the app is visible on Windows (non-transparent window).
+        On macOS, the native panel code injects CSS to override this to transparent.
+      */
       html, body, #root {
-        background: transparent !important;
-        background-color: transparent !important;
+        background: #000000;
+        background-color: #000000;
       }
     </style>
   </head>
-  <body style="background: transparent !important; background-color: transparent !important;">
-    <div id="root" style="background: transparent !important;"></div>
+  <body>
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
