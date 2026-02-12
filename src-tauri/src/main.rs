@@ -745,7 +745,16 @@ mod voice_cmd {
 
         // capture screenshot only for computer mode (like hotkey does)
         let screenshot = if mode_str == "computer" {
-            panels::take_screenshot_excluding_app_sync().ok()
+            #[cfg(target_os = "macos")]
+            {
+                panels::take_screenshot_excluding_app_sync().ok()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                computer::ComputerControl::new()
+                    .ok()
+                    .and_then(|c| c.take_screenshot().ok())
+            }
         } else {
             None
         };
@@ -907,7 +916,16 @@ fn main() {
 
                                 // capture screenshot only for computer mode
                                 let screenshot = if mode == "computer" {
-                                    panels::take_screenshot_excluding_app_sync().ok()
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        panels::take_screenshot_excluding_app_sync().ok()
+                                    }
+                                    #[cfg(not(target_os = "macos"))]
+                                    {
+                                        computer::ComputerControl::new()
+                                            .ok()
+                                            .and_then(|c| c.take_screenshot().ok())
+                                    }
                                 } else {
                                     None
                                 };
@@ -1030,7 +1048,18 @@ fn main() {
 
                     // Cmd+Shift+H - help mode (screenshot + prompt)
                     if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyH) {
-                        let screenshot = panels::take_screenshot_excluding_app_sync().ok();
+                        let screenshot = {
+                            #[cfg(target_os = "macos")]
+                            {
+                                panels::take_screenshot_excluding_app_sync().ok()
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                computer::ComputerControl::new()
+                                    .ok()
+                                    .and_then(|c| c.take_screenshot().ok())
+                            }
+                        };
 
                         #[cfg(target_os = "macos")]
                         trigger_screen_flash();
@@ -1092,6 +1121,7 @@ fn main() {
         })
         .setup(|app| {
             // hide from dock - menubar app only
+            #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             #[cfg(target_os = "macos")]
