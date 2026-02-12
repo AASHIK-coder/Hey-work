@@ -743,7 +743,7 @@ impl Agent {
                             }).await.map_err(|e| AgentError::Computer(ComputerError::Input(e.to_string())))?;
 
                             match result {
-                                Ok(_action_result) => {
+                                Ok(action_result) => {
                                     // zoom action returns screenshot directly, others need post-screenshot
                                     let screenshot = if action.action == "zoom" {
                                         // zoom returns the region screenshot, use panel exclusion
