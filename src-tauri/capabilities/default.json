@@ -1,15 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for taskhomie",
-  "windows": ["main", "mini", "spotlight", "border", "voice"],
+  "description": "Default capabilities for Hey work",
+  "windows": ["main", "border", "voice"],
   "permissions": [
     "core:default",
     "core:event:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:event:allow-emit",
-    "shell:allow-open",
-    "positioner:default"
+    "shell:allow-open"
   ]
 }

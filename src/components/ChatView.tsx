@@ -75,6 +75,7 @@ interface ChatViewProps {
   settingsOpen?: boolean;
   onSettingsClose?: () => void;
   onCollapse?: () => void;
+  headerRight?: React.ReactNode;
 }
 
 function BashBlock({ msg }: { msg: ChatMessage }) {
@@ -91,7 +92,7 @@ function BashBlock({ msg }: { msg: ChatMessage }) {
       <div className="rounded-md overflow-hidden bg-[#0d1117] border border-[#30363d]">
         <div className="px-2 py-1.5 font-mono flex items-center gap-2">
           <span className="text-[#3fb950] text-[11px] select-none">$</span>
-          <span className={`text-[11px] text-[#e6edf3] break-all flex-1 select-text ${msg.pending ? "sweep-text" : ""}`}>
+          <span className={`text-[12px] text-[#e6edf3] break-all flex-1 select-text ${msg.pending ? "sweep-text" : ""}`}>
             {msg.content}
           </span>
           {msg.pending && <span className="text-[8px] text-[#8b949e] animate-pulse shrink-0">...</span>}
@@ -121,7 +122,7 @@ function BashBlock({ msg }: { msg: ChatMessage }) {
                   exit={{ height: 0, opacity: 0 }}
                   className="overflow-hidden"
                 >
-                  <pre className={`px-2 py-1.5 text-[10px] leading-relaxed break-words whitespace-pre-wrap max-h-[120px] overflow-y-auto select-text ${
+                  <pre className={`px-2.5 py-2 text-[11px] leading-relaxed break-words whitespace-pre-wrap max-h-[200px] overflow-y-auto select-text ${
                     isError ? "text-[#f85149]" : "text-[#8b949e]"
                   }`}>
                     {msg.bashOutput}
@@ -229,7 +230,7 @@ function SpeakBubble({ msg }: { msg: ChatMessage }) {
           whileTap={{ scale: 0.95 }}
           className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
             isPlaying
-              ? "bg-orange-500/30 border border-orange-400/30 text-orange-300"
+              ? "bg-blue-500/30 border border-blue-400/30 text-blue-300"
               : "bg-white/10 border border-white/20 text-white/60 hover:text-white/80"
           }`}
         >
@@ -237,10 +238,10 @@ function SpeakBubble({ msg }: { msg: ChatMessage }) {
         </motion.button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 mb-0.5">
-            <Volume2 size={12} className="text-orange-300" />
+            <Volume2 size={12} className="text-blue-300" />
             <span className="text-[10px] text-white/40">Voice response</span>
           </div>
-          <p className="text-[13px] text-white/80 leading-relaxed select-text">{msg.content}</p>
+          <p className="text-[14px] text-white/80 leading-relaxed select-text">{msg.content}</p>
         </div>
       </div>
     </motion.div>
@@ -439,11 +440,11 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         <div className="flex items-start gap-2">
           {icon && <span className="mt-0.5 text-white/50">{icon}</span>}
           {msg.type === "thinking" || msg.type === "info" ? (
-            <div className="text-[13px] leading-relaxed prose prose-invert prose-sm max-w-none text-white/90">
+            <div className="text-[14px] leading-relaxed prose prose-invert prose-sm max-w-none text-white/90">
               <Streamdown isAnimating={false}>{msg.content}</Streamdown>
             </div>
           ) : (
-            <p className={`text-[13px] leading-relaxed break-words select-text ${
+            <p className={`text-[14px] leading-relaxed break-words select-text ${
               isError ? "text-red-400" :
               isAction ? (msg.pending ? "text-white/50 italic" : "text-white/50") :
               "text-white/90"
@@ -463,6 +464,7 @@ const MODELS: { id: ModelId; label: string }[] = [
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
   { id: "claude-sonnet-4-5", label: "Sonnet 4.5" },
   { id: "claude-opus-4-5", label: "Opus 4.5" },
+  { id: "claude-opus-4-6", label: "Opus 4.6 🆕" },
 ];
 
 function formatRelativeTime(timestamp: number): string {
@@ -644,7 +646,7 @@ function HistoryDropdown({ onNewChat, onLoad, disabled }: HistoryDropdownProps) 
               : "hover:bg-white/5 text-white/70 hover:text-white/90"
         }`}
       >
-        <span className="text-[13px] font-semibold tracking-tight">taskhomie</span>
+        <span className="text-[13px] font-semibold tracking-tight">Hey work</span>
         <ChevronDown size={12} className={`text-white/40 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
@@ -777,7 +779,7 @@ function StreamingBubble() {
       className="flex justify-start"
     >
       <div>
-        <div className="text-[13px] leading-relaxed text-white/90 prose prose-invert prose-sm max-w-none">
+        <div className="text-[14px] leading-relaxed text-white/90 prose prose-invert prose-sm max-w-none">
           <Streamdown isAnimating={isRunning}>{streamingText}</Streamdown>
         </div>
       </div>
@@ -785,9 +787,9 @@ function StreamingBubble() {
   );
 }
 
-export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSettingsClose, onCollapse }: ChatViewProps) {
+export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSettingsClose, onCollapse, headerRight }: ChatViewProps) {
   const { messages, isRunning, inputText, setInputText, selectedModel, setSelectedModel, selectedMode, setSelectedMode, streamingText, streamingThinking, clearMessages, setMessages, setVoiceMode, setConversationId } = useAgentStore();
-  const { submit } = useAgent();
+  const { submit, stop } = useAgent();
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -797,6 +799,11 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
   const [usedVoiceInput, setUsedVoiceInput] = useState(false);
   const [showVoiceConfirm, setShowVoiceConfirm] = useState(false);
   const [isPttActive, setIsPttActive] = useState(false);
+
+  // scroll tracking — detect if user has scrolled up manually
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const isAutoScrolling = useRef(false);
+  const prevMessagesLen = useRef(messages.length);
 
   // settings panel state - use prop if provided (compact mode), otherwise internal state
   const [internalSettingsOpen, setInternalSettingsOpen] = useState(false);
@@ -810,13 +817,38 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
   const isCompact = variant === "compact";
   const hideHeader = isMini; // only hide for mini, compact gets the full header
   const panelClass = isMini ? "mini-panel" : isCompact ? "" : isSpotlight ? "spotlight-panel" : "app-panel";
-  const padding = isMini || isCompact ? "px-2 py-2" : isSpotlight ? "px-4 py-4" : "px-3 py-3";
-  const inputPadding = isMini || isCompact ? "p-2 pt-0" : isSpotlight ? "p-4 pt-0" : "p-3 pt-0";
+  const padding = isMini || isCompact ? "px-3 py-3" : isSpotlight ? "px-5 py-4" : "px-4 py-3";
+  const inputPadding = isMini || isCompact ? "p-3 pt-0" : isSpotlight ? "p-5 pt-0" : "p-4 pt-0";
   const gifSize = isMini || isCompact ? "w-[16rem]" : isSpotlight ? "w-[32rem]" : "w-[28rem]";
 
   // ref to track current input for voice append
   const inputTextRef = useRef(inputText);
   useEffect(() => { inputTextRef.current = inputText; }, [inputText]);
+
+  // ─── Scroll helpers ───────────────────────────────────────────
+  const scrollToBottom = (instant = false) => {
+    isAutoScrolling.current = true;
+    if (instant && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+    setUserScrolledUp(false);
+    requestAnimationFrame(() => { isAutoScrolling.current = false; });
+  };
+
+  // Track user scroll position — show "scroll to bottom" when scrolled up
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      if (isAutoScrolling.current) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setUserScrolledUp(distanceFromBottom > 80);
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
 
   // voice event listeners
   useEffect(() => {
@@ -853,28 +885,50 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
     };
   }, [setInputText]);
 
-  // auto-scroll on new messages
+  // ─── Auto-scroll: new messages added ──────────────────────────
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (messages.length > prevMessagesLen.current) {
+      scrollToBottom(true);
+    }
+    prevMessagesLen.current = messages.length;
+  }, [messages.length]);
 
-  // auto-scroll during streaming (throttled)
+  // ─── Auto-scroll: streaming text / thinking updates ───────────
   useEffect(() => {
     if (!streamingText && !streamingThinking) return;
+    if (userScrolledUp) return;
     const frame = requestAnimationFrame(() => {
       if (scrollRef.current) {
+        isAutoScrolling.current = true;
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        requestAnimationFrame(() => { isAutoScrolling.current = false; });
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [streamingText, streamingThinking]);
+  }, [streamingText, streamingThinking, userScrolledUp]);
 
-  // auto-scroll when agent finishes
+  // ─── Auto-scroll: when agent finishes, smooth scroll to end ───
   useEffect(() => {
     if (!isRunning) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      scrollToBottom(false);
     }
   }, [isRunning]);
+
+  // ─── Auto-scroll: periodic catch-up during agent execution ────
+  useEffect(() => {
+    if (!isRunning) return;
+    const interval = setInterval(() => {
+      if (!userScrolledUp && scrollRef.current) {
+        const distFromBottom = scrollRef.current.scrollHeight - scrollRef.current.scrollTop - scrollRef.current.clientHeight;
+        if (distFromBottom > 20) {
+          isAutoScrolling.current = true;
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          requestAnimationFrame(() => { isAutoScrolling.current = false; });
+        }
+      }
+    }, 300);
+    return () => clearInterval(interval);
+  }, [isRunning, userScrolledUp]);
 
   // focus input on mount
   useEffect(() => {
@@ -886,8 +940,8 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
   useEffect(() => {
     requestAnimationFrame(() => {
       if (inputRef.current) {
-        inputRef.current.style.height = "24px";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 100) + "px";
+        inputRef.current.style.height = "28px";
+        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
       }
     });
   }, [voiceText, inputText]);
@@ -986,7 +1040,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                 }}
                 disabled={isRunning}
               />
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value as ModelId)}
@@ -999,6 +1053,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                     </option>
                   ))}
                 </select>
+                {headerRight}
                 <button
                   onClick={() => setSettingsOpen(true)}
                   className="w-7 h-7 flex items-center justify-center rounded-md text-white/40 hover:text-white/70 hover:bg-white/10 transition-colors"
@@ -1036,8 +1091,8 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
       ) : (
         <>
           {/* messages */}
-          <div ref={scrollRef} className={`flex-1 overflow-y-auto ${padding}`}>
-            <div className={messages.length === 0 && !streamingText && !streamingThinking ? "h-full" : "space-y-2"}>
+          <div ref={scrollRef} className={`flex-1 overflow-y-auto scroll-smooth ${padding} relative`}>
+            <div className={messages.length === 0 && !streamingText && !streamingThinking ? "h-full" : "space-y-3"}>
               <AnimatePresence mode="popLayout">
                 {messages.length === 0 && !streamingText && !streamingThinking ? (
                   <motion.div
@@ -1053,12 +1108,29 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                     {messages.map((msg) => <MessageBubble key={msg.id} msg={msg} />)}
                     <ThinkingBubble />
                     <StreamingBubble />
-                    <div ref={bottomRef} />
+                    <div ref={bottomRef} className="h-2" />
                   </>
                 )}
               </AnimatePresence>
             </div>
           </div>
+
+          {/* scroll to bottom button — visible when user scrolls up */}
+          <AnimatePresence>
+            {userScrolledUp && messages.length > 0 && (
+              <motion.button
+                initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                transition={{ duration: 0.15 }}
+                onClick={() => scrollToBottom(true)}
+                className="scroll-to-bottom-btn"
+              >
+                <ChevronDown size={16} />
+                <span>Latest</span>
+              </motion.button>
+            )}
+          </AnimatePresence>
 
           {/* input or stop hint */}
           <div className={`${inputPadding} shrink-0`}>
@@ -1072,7 +1144,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                   className="glass-card mb-2 p-2"
                 >
                   <div className="flex items-start gap-2 mb-2">
-                    <Mic size={14} className="text-orange-300 shrink-0 mt-0.5" />
+                    <Mic size={14} className="text-blue-300 shrink-0 mt-0.5" />
                     <p className="text-[12px] text-white/80 leading-relaxed break-words whitespace-pre-wrap">{inputText}</p>
                   </div>
                   <div className="flex justify-end gap-2">
@@ -1093,7 +1165,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                       }}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
-                      className="px-3 py-1 rounded-lg bg-orange-500/30 border border-orange-400/30 text-[11px] text-orange-300 hover:bg-orange-500/40 transition-colors"
+                      className="px-3 py-1 rounded-lg bg-blue-500/30 border border-blue-400/30 text-[11px] text-blue-300 hover:bg-blue-500/40 transition-colors"
                     >
                       Send
                     </motion.button>
@@ -1103,9 +1175,40 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
             </AnimatePresence>
 
             {isRunning ? (
-              <div className="glass-card flex items-center justify-center gap-2 p-3 text-red-300/70">
-                <Square size={14} />
-                <span className="text-[12px]">⌘⇧S to stop</span>
+              <div className="glass-card p-2">
+                {/* Live activity indicator */}
+                <div className="flex items-center gap-2 mb-1.5">
+                  <motion.div
+                    className="w-2 h-2 rounded-full bg-blue-400"
+                    animate={{ scale: [1, 1.3, 1], opacity: [0.6, 1, 0.6] }}
+                    transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+                  />
+                  <span className="text-[11px] text-blue-300/70 tracking-wide flex-1">
+                    {messages.length > 0 && messages[messages.length - 1].type === "action" && messages[messages.length - 1].pending
+                      ? messages[messages.length - 1].content.slice(0, 50)
+                      : messages.length > 0 && messages[messages.length - 1].type === "bash" && messages[messages.length - 1].pending
+                      ? "Executing command..."
+                      : streamingText ? "Responding..." : streamingThinking ? "Thinking..." : "Working..."}
+                  </span>
+                </div>
+                {/* Animated progress line */}
+                <div className="h-[2px] w-full bg-white/5 rounded-full overflow-hidden mb-1.5">
+                  <motion.div
+                    className="h-full rounded-full"
+                    style={{ background: "linear-gradient(90deg, transparent, #3b82f6, transparent)" }}
+                    animate={{ x: ["-100%", "100%"] }}
+                    transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                  />
+                </div>
+                {/* Stop button */}
+                <button
+                  onClick={() => stop()}
+                  className="w-full flex items-center justify-center gap-2 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/10 hover:border-red-500/20 text-red-300/60 hover:text-red-300 transition-all text-[11px]"
+                >
+                  <Square size={11} />
+                  <span>Stop</span>
+                  <kbd className="text-[9px] text-red-300/30 bg-red-500/10 px-1 py-0.5 rounded ml-1">⌘⇧S</kbd>
+                </button>
               </div>
             ) : showVoiceConfirm ? null : (
               <div className="glass-card flex items-center gap-2 p-2">
@@ -1128,7 +1231,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                   }}
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
-                  className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-colors bg-white/5 border border-white/10 text-white/40 hover:text-orange-300 hover:bg-orange-500/20 hover:border-orange-400/30"
+                  className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-colors bg-white/5 border border-white/10 text-white/40 hover:text-blue-300 hover:bg-blue-500/20 hover:border-blue-400/30"
                   title="Hold to speak"
                 >
                   <Mic size={14} />
@@ -1140,12 +1243,12 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                   onKeyDown={handleKeyDown}
                   placeholder="what should I do?"
                   rows={1}
-                  className="flex-1 bg-transparent text-white text-[13px] placeholder-white/30 resize-none focus:outline-none min-h-[24px] max-h-[100px] py-1 px-1 overflow-hidden"
-                  style={{ height: "24px" }}
+                  className="flex-1 bg-transparent text-white text-[14px] placeholder-white/30 resize-none focus:outline-none min-h-[28px] max-h-[120px] py-1.5 px-1.5 overflow-hidden"
+                  style={{ height: "28px" }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement;
-                    target.style.height = "24px";
-                    target.style.height = Math.min(target.scrollHeight, 100) + "px";
+                    target.style.height = "28px";
+                    target.style.height = Math.min(target.scrollHeight, 120) + "px";
                   }}
                 />
                 <motion.button
@@ -1154,7 +1257,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                   whileTap={{ scale: 0.95 }}
                   className={`shrink-0 h-8 px-2 rounded-xl flex items-center gap-1.5 transition-colors ${
                     selectedMode === "computer"
-                      ? "bg-orange-500/30 border border-orange-400/30 text-orange-300"
+                      ? "bg-blue-500/30 border border-blue-400/30 text-blue-300"
                       : "bg-white/5 border border-white/10 text-white/40 hover:text-white/60"
                   }`}
                   title={selectedMode === "computer" ? "Computer control active" : "Enable computer control"}
@@ -1169,7 +1272,7 @@ export default function ChatView({ variant, settingsOpen: propSettingsOpen, onSe
                   whileTap={{ scale: 0.95 }}
                   className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-colors ${
                     inputText.trim()
-                      ? "bg-orange-500/30 border border-orange-400/30 text-orange-300"
+                      ? "bg-blue-500/30 border border-blue-400/30 text-blue-300"
                       : "bg-white/5 border border-white/10 text-white/20"
                   }`}
                 >

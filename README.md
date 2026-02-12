@@ -1,5 +1,4 @@
-# Taskhomie (Computer Use AI Agent)
-<img width="846" height="606" alt="Screenshot 2025-12-29 at 2 06 38 AM" src="https://github.com/user-attachments/assets/b5b7de82-ec58-424f-af68-e9287a6422d6" />
+# Hey work
 
 Local AI agent that controls your computer. Give it natural language instructions and watch it take screenshots, move your mouse, click, type, and run terminal commands.
 
@@ -7,9 +6,7 @@ Built with Tauri, React, and Rust.
 
 ## Demo
 
-https://github.com/user-attachments/assets/8edd92a7-7d3e-472a-9e48-3b561f0257d6
-
-Here, I used it to autonomously read and reply to tweets, lol. This is purely for demonstration/research, you should not attempt to do the same, lol.
+Demo media will be published from the Hey work repository releases.
 
 ## Modes
 
@@ -55,7 +52,7 @@ On macOS, you'll need to grant accessibility permissions when prompted (System S
 
 ## Contributing
 
-PRs welcome. Hit me up on Twitter @ishanxnagpal.
+PRs welcome.
 
 ## License
 

@@ -2,7 +2,7 @@
 // run with: cargo run --example test_browser
 // requires Chrome to be running with --remote-debugging-port=9222
 
-use taskhomie_lib::browser::{BrowserClient, restart_chrome_with_debugging};
+use hey_work_lib::browser::{BrowserClient, restart_chrome_with_debugging};
 
 #[tokio::main]
 async fn main() {

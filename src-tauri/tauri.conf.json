@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "taskhomie",
+  "productName": "Hey work",
   "version": "0.1.0",
-  "identifier": "com.taskhomie.app",
+  "identifier": "com.heywork.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -14,9 +14,9 @@
     "windows": [
       {
         "label": "main",
-        "title": "taskhomie",
-        "width": 280,
-        "height": 40,
+        "title": "Hey work",
+        "width": 52,
+        "height": 52,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -26,7 +26,7 @@
       },
       {
         "label": "voice",
-        "title": "taskhomie-voice",
+        "title": "Hey work Voice",
         "url": "index.html?voice=true",
         "width": 300,
         "height": 300,
@@ -39,7 +39,7 @@
       },
       {
         "label": "border",
-        "title": "taskhomie-border",
+        "title": "Hey work Border",
         "url": "index.html?border=true",
         "width": 1920,
         "height": 1080,
@@ -58,16 +58,16 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+    "targets": [
+      "nsis",
+      "msi",
+      "dmg",
+      "app"
     ],
     "macOS": {
       "minimumSystemVersion": "10.15"
-    }
+    },
+    "publisher": "Hey work",
+    "category": "Productivity"
   }
 }

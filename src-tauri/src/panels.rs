@@ -48,9 +48,9 @@ fn take_screenshot_excluding_impl() -> Result<String, String> {
         }
     });
 
-    // small delay for window server to process hide
+    // minimal delay for window server to process hide (10ms is enough on modern macOS)
     if border_was_visible || voice_was_visible {
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     // take screenshot

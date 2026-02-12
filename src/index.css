@@ -35,12 +35,15 @@
 html, body, #root {
   height: 100%;
   overflow: hidden;
-  background: transparent;
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
+/* #root starts with no clipping — MainWindow.tsx toggles this per mode */
 #root {
-  border-radius: 12px;
-  overflow: hidden;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent !important;
 }
 
 /* mini window needs no border radius or overflow clipping for transparent orb */
@@ -113,6 +116,253 @@ body {
   background: #1a1a1a;
   color: rgba(255, 255, 255, 0.9);
   padding: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   IDLE ORB + REVEAL CAPSULE — Two-stage expansion
+   Stage 1: Solo orb (no background, just the circle)
+   Stage 2: Capsule reveals "Hey work" then opens chat
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Shared orb parts ── */
+
+@property --orb-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes orb-spin {
+  to { --orb-angle: 360deg; }
+}
+
+.idle-orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--orb-angle, 0deg),
+    rgba(59, 130, 246, 0.8),
+    rgba(99, 102, 241, 0.5),
+    rgba(59, 130, 246, 0.08),
+    rgba(14, 165, 233, 0.55),
+    rgba(59, 130, 246, 0.8)
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: orb-spin 4s linear infinite;
+  opacity: 0.7;
+  transition: opacity 0.4s ease;
+}
+
+.idle-orb-face {
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+  background: radial-gradient(
+    circle at 40% 35%,
+    rgba(18, 20, 34, 1) 0%,
+    rgba(6, 6, 14, 1) 100%
+  );
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    inset 0 1px 1px rgba(255, 255, 255, 0.04);
+}
+
+.idle-orb-icon {
+  color: rgba(120, 165, 255, 0.55);
+  transition: color 0.4s ease, filter 0.4s ease;
+  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.2));
+}
+
+.idle-orb-icon--active {
+  color: rgba(140, 180, 255, 0.85);
+  filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.4));
+}
+
+/* ── Stage 1: Solo icon — no background at all ── */
+
+.idle-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-app-region: drag;
+  margin: 0;
+}
+
+.idle-icon-img {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+  image-rendering: auto;
+  filter: drop-shadow(0 2px 10px rgba(59, 130, 246, 0.25));
+  -webkit-app-region: drag;
+}
+
+/* ── Stage 2: Reveal row — icon + brand text (no capsule) ── */
+
+.reveal-row {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 6px;
+  -webkit-app-region: drag;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  position: relative;
+}
+
+.reveal-icon-img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 10px rgba(59, 130, 246, 0.35));
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+  animation: icon-float 3.2s ease-in-out infinite;
+}
+
+/* ── Brand text with shimmer lighting ── */
+
+.reveal-brand {
+  position: relative;
+  overflow: visible;
+  flex: 0 0 auto;
+  min-width: max-content;
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: linear-gradient(120deg, rgba(8, 12, 24, 0.92), rgba(10, 18, 34, 0.9));
+  border: 1px solid rgba(120, 175, 255, 0.28);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.5),
+    0 0 22px rgba(80, 140, 255, 0.32),
+    inset 0 1px 1px rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(14px);
+}
+
+.reveal-brand-text {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: transparent;
+  background: linear-gradient(90deg, #f7fbff 0%, #c9ddff 45%, #f7fbff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  text-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.7),
+    0 0 10px rgba(110, 170, 255, 0.35);
+}
+
+/* Shimmer — a bright light streak that sweeps across the text once */
+.reveal-brand-shimmer {
+  display: none;
+}
+
+/* Premium animated border + scanline */
+.reveal-brand::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 999px;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--glow-angle, 0deg),
+    rgba(70, 130, 255, 0.2),
+    rgba(120, 190, 255, 0.8),
+    rgba(70, 130, 255, 0.2)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: premium-rotate 6s linear infinite;
+  pointer-events: none;
+}
+
+.reveal-brand::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 0%,
+    rgba(120, 190, 255, 0.18) 45%,
+    rgba(160, 220, 255, 0.35) 50%,
+    rgba(120, 190, 255, 0.18) 55%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  animation: premium-scan 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes premium-rotate {
+  to { --glow-angle: 360deg; }
+}
+
+@keyframes premium-scan {
+  0% { transform: translateX(-120%); opacity: 0; }
+  20% { opacity: 0.6; }
+  50% { opacity: 0.9; }
+  80% { opacity: 0.6; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
+
+@keyframes icon-float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-1.5px); }
+  100% { transform: translateY(0px); }
+}
+
+@keyframes reveal-shimmer {
+  0% { background-position: 200% center; }
+  100% { background-position: -100% center; }
+}
+
+/* scroll to bottom button */
+.scroll-to-bottom-btn {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 70px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(30, 30, 40, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: rgba(40, 40, 55, 0.95);
+  border-color: rgba(96, 165, 250, 0.4);
 }
 
 /* scrollbar */
@@ -311,83 +561,205 @@ body {
   scrollbar-width: none;
 }
 
-/* agent active edge glow overlay */
+/* ═══════════════════════════════════════════════════════════════
+   PREMIUM AI BORDER - Electric Blue Forcefield
+   When the agent is active, the screen edges glow with a 
+   sophisticated blue energy field with traveling light beams.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Base edge glow layer */
 .edge-glow {
   position: absolute;
   pointer-events: none;
 }
 
+/* ── TOP EDGE ── */
 .edge-top {
   top: 0;
   left: 0;
   right: 0;
-  height: 90px;
+  height: 60px;
   background: linear-gradient(
     to bottom,
-    rgba(96, 165, 250, 0.6),
-    rgba(167, 139, 250, 0.4) 30%,
+    rgba(59, 130, 246, 0.45),
+    rgba(37, 99, 235, 0.20) 40%,
     transparent
   );
-  animation: edge-pulse 0.5s ease-in-out infinite alternate, edge-shift-h 2s linear infinite;
-  background-size: 200% 100%;
+  animation: edge-breathe 3s ease-in-out infinite alternate;
 }
 
+/* ── BOTTOM EDGE ── */
 .edge-bottom {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 90px;
+  height: 60px;
   background: linear-gradient(
     to top,
-    rgba(244, 114, 182, 0.6),
-    rgba(167, 139, 250, 0.4) 30%,
+    rgba(59, 130, 246, 0.45),
+    rgba(37, 99, 235, 0.20) 40%,
     transparent
   );
-  animation: edge-pulse 0.5s ease-in-out infinite alternate-reverse, edge-shift-h 2s linear infinite reverse;
-  background-size: 200% 100%;
+  animation: edge-breathe 3s ease-in-out infinite alternate-reverse;
 }
 
+/* ── LEFT EDGE ── */
 .edge-left {
   top: 0;
   bottom: 0;
   left: 0;
-  width: 90px;
+  width: 60px;
   background: linear-gradient(
     to right,
-    rgba(167, 139, 250, 0.6),
-    rgba(96, 165, 250, 0.4) 30%,
+    rgba(59, 130, 246, 0.45),
+    rgba(37, 99, 235, 0.20) 40%,
     transparent
   );
-  animation: edge-pulse 0.5s ease-in-out infinite alternate, edge-shift-v 2s linear infinite;
-  background-size: 100% 200%;
+  animation: edge-breathe 3s ease-in-out infinite alternate;
 }
 
+/* ── RIGHT EDGE ── */
 .edge-right {
   top: 0;
   bottom: 0;
   right: 0;
-  width: 90px;
+  width: 60px;
   background: linear-gradient(
     to left,
-    rgba(244, 114, 182, 0.6),
-    rgba(167, 139, 250, 0.4) 30%,
+    rgba(59, 130, 246, 0.45),
+    rgba(37, 99, 235, 0.20) 40%,
     transparent
   );
-  animation: edge-pulse 0.5s ease-in-out infinite alternate-reverse, edge-shift-v 2s linear infinite reverse;
-  background-size: 100% 200%;
+  animation: edge-breathe 3s ease-in-out infinite alternate-reverse;
 }
 
-@keyframes edge-pulse {
+/* Traveling light beam - horizontal (top & bottom) */
+.beam-h {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 30%,
+    rgba(96, 165, 250, 0.0) 35%,
+    rgba(147, 197, 253, 0.9) 50%,
+    rgba(96, 165, 250, 0.0) 65%,
+    transparent 70%,
+    transparent 100%
+  );
+  background-size: 300% 100%;
+}
+
+.beam-h-top {
+  top: 0;
+  box-shadow: 0 0 15px 3px rgba(59, 130, 246, 0.4), 0 0 40px 8px rgba(59, 130, 246, 0.15);
+  animation: beam-travel-h 4s linear infinite;
+}
+
+.beam-h-bottom {
+  bottom: 0;
+  box-shadow: 0 0 15px 3px rgba(59, 130, 246, 0.4), 0 0 40px 8px rgba(59, 130, 246, 0.15);
+  animation: beam-travel-h 4s linear infinite reverse;
+}
+
+/* Traveling light beam - vertical (left & right) */
+.beam-v {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    transparent 30%,
+    rgba(96, 165, 250, 0.0) 35%,
+    rgba(147, 197, 253, 0.9) 50%,
+    rgba(96, 165, 250, 0.0) 65%,
+    transparent 70%,
+    transparent 100%
+  );
+  background-size: 100% 300%;
+}
+
+.beam-v-left {
+  left: 0;
+  box-shadow: 0 0 15px 3px rgba(59, 130, 246, 0.4), 0 0 40px 8px rgba(59, 130, 246, 0.15);
+  animation: beam-travel-v 4s linear infinite;
+}
+
+.beam-v-right {
+  right: 0;
+  box-shadow: 0 0 15px 3px rgba(59, 130, 246, 0.4), 0 0 40px 8px rgba(59, 130, 246, 0.15);
+  animation: beam-travel-v 4s linear infinite reverse;
+}
+
+/* Corner accent glows - bright dots at corners */
+.corner-glow {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  pointer-events: none;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(96, 165, 250, 0.35) 0%,
+    rgba(59, 130, 246, 0.12) 40%,
+    transparent 70%
+  );
+  animation: corner-pulse 2.5s ease-in-out infinite alternate;
+}
+
+.corner-tl { top: -40px; left: -40px; }
+.corner-tr { top: -40px; right: -40px; animation-delay: 0.6s; }
+.corner-bl { bottom: -40px; left: -40px; animation-delay: 1.2s; }
+.corner-br { bottom: -40px; right: -40px; animation-delay: 1.8s; }
+
+/* Thin border line - subtle 1px frame */
+.border-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 0;
+}
+
+/* ── ANIMATIONS ── */
+
+/* Gentle breathing pulse for edge glows */
+@keyframes edge-breathe {
   0% { opacity: 0.5; }
-  100% { opacity: 1; }
+  50% { opacity: 0.8; }
+  100% { opacity: 0.6; }
 }
 
-@keyframes edge-shift-h {
-  0% { background-position: 0% 0; }
+/* Traveling beam - horizontal */
+@keyframes beam-travel-h {
+  0% { background-position: -100% 0; }
   100% { background-position: 200% 0; }
 }
 
-@keyframes edge-shift-v {
-  0% { background-position: 0 0%; }
+/* Traveling beam - vertical */
+@keyframes beam-travel-v {
+  0% { background-position: 0 -100%; }
   100% { background-position: 0 200%; }
+}
+
+/* Corner pulse - soft breathing */
+@keyframes corner-pulse {
+  0% { opacity: 0.4; transform: scale(0.85); }
+  100% { opacity: 0.9; transform: scale(1.1); }
+}
+
+/* Fade-in for the entire border overlay */
+@keyframes border-fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.border-overlay-enter {
+  animation: border-fade-in 0.6s ease-out forwards;
 }

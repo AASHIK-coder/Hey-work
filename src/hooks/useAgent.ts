@@ -139,6 +139,16 @@ function attachListeners() {
         // server-side web tools (web_search, web_fetch) completed
         s.markLastActionComplete();
         break;
+
+      case "status":
+        // status updates from agent (swarm activation, progress, etc.)
+        s.addMessage({ role: "assistant", content: message, type: "info" });
+        break;
+
+      case "skill":
+        // skill execution update (e.g., "Using skill: Open Chrome")
+        s.addMessage({ role: "assistant", content: `🎯 ${message}`, type: "info" });
+        break;
     }
   });
 

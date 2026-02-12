@@ -1,12 +1,12 @@
 [package]
-name = "taskhomie"
+name = "hey-work"
 version = "0.1.0"
-description = "AI-powered computer control"
+description = "Hey work - AI-powered computer control"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "taskhomie_lib"
+name = "hey_work_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-shell = "2"
-tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
+# tauri-plugin-positioner removed - manual positioning used instead
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -60,8 +60,13 @@ bytes = "1"
 # allocator
 mimalloc = "0.1"
 
+# rate limiting jitter
+rand = "0.8"
+
 # global hotkey
 tauri-plugin-global-shortcut = "2"
+chrono = { version = "0.4.43", features = ["serde"] }
+keyring = "3.6.3"
 
 # macos panel support
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -70,8 +75,8 @@ core-graphics = "0.24"
 core-foundation = "0.10"
 foreign-types = "0.5"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSScreen"] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSScreen", "NSColor"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
 dispatch = "0.2"
 
 [lints.rust]

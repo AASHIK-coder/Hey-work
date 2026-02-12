@@ -98,11 +98,16 @@ impl BashExecutor {
 
         println!("[bash] Executing: {}", command);
 
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c")
-            .arg(command)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(command);
+            c
+        } else {
+            let mut c = Command::new("bash");
+            c.arg("-c").arg(command);
+            c
+        };
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         if let Some(ref dir) = self.working_dir {
             cmd.current_dir(dir);

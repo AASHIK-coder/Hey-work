@@ -15,7 +15,9 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams,
     DispatchMouseEventType, MouseButton,
 };
+use chromiumoxide::cdp::browser_protocol::network::SetCookieParams;
 use chromiumoxide::cdp::browser_protocol::page::{
+    AddScriptToEvaluateOnNewDocumentParams,
     CaptureScreenshotFormat, CloseParams, HandleJavaScriptDialogParams, NavigateParams,
     ReloadParams,
 };
@@ -26,12 +28,22 @@ use futures::StreamExt;
 use tokio::sync::Mutex;
 
 // paths to check for DevToolsActivePort (for connecting to existing chrome)
+#[cfg(target_os = "macos")]
 const CHROME_PROFILES: &[&str] = &[
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
     "Library/Application Support/Arc/User Data",
     "Library/Application Support/Chromium",
 ];
+
+#[cfg(target_os = "windows")]
+const CHROME_PROFILES: &[&str] = &[
+    "AppData/Local/Google/Chrome/User Data",
+    "AppData/Local/Google/Chrome SxS/User Data",
+];
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const CHROME_PROFILES: &[&str] = &[];
 
 pub struct BrowserClient {
     browser: Browser,
@@ -464,9 +476,163 @@ impl BrowserClient {
     // tool: new_page
     pub async fn new_page(&mut self, url: &str) -> Result<String> {
         let page = self.browser.new_page(url).await?;
+        
+        // Inject stealth scripts into the new page/tab so that
+        // navigator.webdriver and other automation signals are hidden
+        let stealth_js = Self::stealth_script();
+        let _ = page.execute(
+            AddScriptToEvaluateOnNewDocumentParams::builder()
+                .source(stealth_js)
+                .build()
+                .unwrap()
+        ).await;
+        // Also run immediately on current context
+        let _ = page.evaluate(Self::stealth_script().to_string()).await;
+        
         self.pages.push(page);
         self.selected_page_idx = self.pages.len() - 1;
         Ok(format!("Created new page and navigated to {url}"))
+    }
+
+    /// Open a new page with FULL stealth protection.
+    /// This is critical for Google: opens about:blank FIRST, injects stealth
+    /// scripts and cookies, THEN navigates to the target URL.
+    /// This ensures navigator.webdriver is hidden BEFORE Google's scripts run.
+    pub async fn new_page_stealth(&mut self, url: &str) -> Result<String> {
+        println!("[browser] new_page_stealth: opening about:blank first");
+        
+        // Step 1: Create a blank page — no target site scripts run yet
+        let page = self.browser.new_page("about:blank").await?;
+        
+        // Step 2: Inject stealth via addScriptToEvaluateOnNewDocument
+        // This registers the script to run BEFORE any page JS on future navigations
+        let stealth_js = Self::stealth_script();
+        let _ = page.execute(
+            AddScriptToEvaluateOnNewDocumentParams::builder()
+                .source(stealth_js)
+                .build()
+                .unwrap()
+        ).await;
+        
+        // Step 3: Pre-set Google consent cookies via CDP Network.setCookie
+        // This prevents the cookie consent overlay from appearing
+        Self::set_google_cookies_on_page(&page).await;
+        
+        // Step 4: NOW navigate to the actual URL — stealth runs before page JS
+        println!("[browser] new_page_stealth: navigating to {}", url);
+        let nav_result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            page.goto(url)
+        ).await;
+        
+        match nav_result {
+            Ok(Ok(_)) => println!("[browser] new_page_stealth: navigation complete"),
+            Ok(Err(e)) => println!("[browser] new_page_stealth: nav error (continuing): {}", e),
+            Err(_) => println!("[browser] new_page_stealth: nav timeout (page still loading)"),
+        }
+        
+        self.pages.push(page);
+        self.selected_page_idx = self.pages.len() - 1;
+        Ok(format!("Created stealth page and navigated to {url}"))
+    }
+
+    /// Set Google consent and preference cookies on a page via CDP
+    async fn set_google_cookies_on_page(page: &Page) {
+        // SOCS cookie: Google's consent acceptance cookie (GDPR/CCPA)
+        let _ = page.execute(
+            SetCookieParams::builder()
+                .name("SOCS")
+                .value("CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiADGgYIgOLQqgY")
+                .domain(".google.com")
+                .path("/")
+                .build()
+                .unwrap()
+        ).await;
+        
+        // CONSENT cookie: Legacy consent cookie (backup)
+        let _ = page.execute(
+            SetCookieParams::builder()
+                .name("CONSENT")
+                .value("YES+cb.20210720-07-p0.en+FX+688")
+                .domain(".google.com")
+                .path("/")
+                .build()
+                .unwrap()
+        ).await;
+        
+        // AEC cookie: Helps avoid automated traffic detection
+        let _ = page.execute(
+            SetCookieParams::builder()
+                .name("AEC")
+                .value("AVYB7cpOSairVfJuni4yDHKnOGdCNy3USxmAllmGbIK9sJlvxAolWJJoLQ")
+                .domain(".google.com")
+                .path("/")
+                .build()
+                .unwrap()
+        ).await;
+
+        // NID cookie: Google preferences (language=en, region=US)
+        let _ = page.execute(
+            SetCookieParams::builder()
+                .name("NID")
+                .value("511=some-pref-value")
+                .domain(".google.com")
+                .path("/")
+                .build()
+                .unwrap()
+        ).await;
+        
+        println!("[browser] Google consent cookies set via CDP");
+    }
+
+    /// Try to dismiss any cookie consent overlay on the current page
+    pub async fn dismiss_cookie_consent(&mut self) -> Result<String> {
+        let page = self.selected_page()?;
+        let dismiss_js = r#"
+        (function() {
+            // Strategy 1: Google's consent buttons (multiple known selectors)
+            var selectors = [
+                'button#L2AGLb',
+                'button[aria-label="Accept all"]',
+                'button[aria-label="Reject all"]',
+                'div.QS5gu.sy4vM',
+                'form[action*="consent"] button',
+                'form[action*="consent"] input[type="submit"]'
+            ];
+            for (var sel of selectors) {
+                var btn = document.querySelector(sel);
+                if (btn) {
+                    btn.click();
+                    return 'clicked:' + sel;
+                }
+            }
+            
+            // Strategy 2: Look for buttons with "Accept" text
+            var buttons = document.querySelectorAll('button, [role="button"]');
+            for (var btn of buttons) {
+                var text = (btn.innerText || btn.textContent || '').toLowerCase().trim();
+                if (text === 'accept all' || text === 'i agree' || text === 'accept' || text === 'agree') {
+                    btn.click();
+                    return 'clicked:text:' + text;
+                }
+            }
+            
+            // Strategy 3: Check if we're on consent.google.com and try to submit
+            if (window.location.hostname.includes('consent.google')) {
+                var form = document.querySelector('form');
+                if (form) { form.submit(); return 'submitted:consent-form'; }
+            }
+            
+            return 'no-consent-found';
+        })()
+        "#;
+        
+        let result = page.evaluate(dismiss_js.to_string()).await
+            .map(|v| v.into_value::<String>().unwrap_or_default())
+            .unwrap_or_default();
+        
+        println!("[browser] dismiss_cookie_consent: {}", result);
+        Ok(result)
     }
 
     // tool: list_pages
@@ -681,6 +847,165 @@ impl BrowserClient {
 
         Ok((x, y))
     }
+
+    // === Stealth & Anti-Detection ===
+
+    /// Returns the stealth JavaScript that overrides automation detection signals.
+    /// This script hides navigator.webdriver, spoofs plugins, languages, etc.
+    fn stealth_script() -> &'static str {
+        r#"
+            // 1. Override navigator.webdriver — the #1 detection signal
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            // 2. Override navigator.plugins — empty in headless/automation
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    const p = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+                    ];
+                    p.length = 3;
+                    return p;
+                }
+            });
+
+            // 3. Override navigator.languages
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+            // 4. Override permissions API (Notification permission query is a common check)
+            const originalQuery = window.Notification && Notification.permission
+                ? Notification.permission : 'default';
+            if (navigator.permissions) {
+                const origQuery = navigator.permissions.query;
+                navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications'
+                        ? Promise.resolve({ state: originalQuery })
+                        : origQuery(parameters)
+                );
+            }
+
+            // 5. Override chrome.runtime to look like a real browser extension environment
+            if (!window.chrome) window.chrome = {};
+            if (!window.chrome.runtime) {
+                window.chrome.runtime = {
+                    connect: function() {},
+                    sendMessage: function() {},
+                    PlatformOs: { MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' },
+                    PlatformArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' },
+                    PlatformNaclArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' },
+                    RequestUpdateCheckStatus: { THROTTLED: 'throttled', NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available' },
+                    OnInstalledReason: { INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update' },
+                    OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+                };
+            }
+
+            // 6. Spoof WebGL vendor/renderer (headless has different values)
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Intel Inc.';
+                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                return getParameter.call(this, parameter);
+            };
+
+            // 7. Suppress `cdc_` property on HTMLElement (ChromeDriver detection)
+            // Some sites check for the presence of `$cdc_` prefixed properties
+            try {
+                const ownKeys = Object.keys;
+                Object.keys = function(obj) {
+                    return ownKeys(obj).filter(k => !k.startsWith('$cdc_'));
+                };
+            } catch(e) {}
+
+            // 8. Override connection info (headless uses different value)
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    rtt: 50,
+                    downlink: 10,
+                    effectiveType: '4g',
+                    saveData: false
+                })
+            });
+
+            // 9. Override navigator.hardwareConcurrency (headless defaults to 2)
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+
+            // 10. Override navigator.deviceMemory (not present in headless)
+            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        "#
+    }
+
+    /// Inject stealth scripts into the currently selected page so Google doesn't detect automation.
+    /// Uses Page.addScriptToEvaluateOnNewDocument which runs before any page JS.
+    pub async fn inject_stealth(&self) -> Result<()> {
+        let page = self.selected_page()?;
+        let stealth_js = Self::stealth_script();
+
+        page.execute(
+            AddScriptToEvaluateOnNewDocumentParams::builder()
+                .source(stealth_js)
+                .build()
+                .unwrap()
+        ).await?;
+
+        // Also immediately run the script on the current page context
+        let _ = page.evaluate(stealth_js.to_string()).await;
+
+        println!("[browser] Stealth scripts injected");
+        Ok(())
+    }
+
+    // === Deep Research helpers ===
+
+    /// Evaluate JavaScript on the current page and return result as string
+    pub async fn evaluate_js(&mut self, js: &str) -> Result<String> {
+        let page = self.selected_page()?;
+        let eval_result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            page.evaluate(js.to_string()),
+        )
+        .await;
+
+        match eval_result {
+            Ok(Ok(result)) => Ok(result.into_value::<String>().unwrap_or_default()),
+            Ok(Err(e)) => Err(anyhow!("JS evaluation failed: {}", e)),
+            Err(_) => Err(anyhow!("JS evaluation timed out")),
+        }
+    }
+
+    /// Get the current page URL
+    pub async fn current_url(&mut self) -> Result<String> {
+        let page = self.selected_page()?;
+        Ok(page.url().await?.unwrap_or_default())
+    }
+
+    /// Get the number of open pages/tabs
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Get the currently selected page index
+    pub fn selected_page_index(&self) -> usize {
+        self.selected_page_idx
+    }
+
+    /// Close all pages/tabs (used for cleanup after research)
+    pub async fn close_all_pages(&mut self) -> Result<()> {
+        self.refresh_pages().await?;
+        // Close pages from last to first, keeping at least one (Chrome needs it)
+        while self.pages.len() > 1 {
+            let idx = self.pages.len() - 1;
+            let page = &self.pages[idx];
+            let _ = page.execute(CloseParams::default()).await;
+            self.pages.remove(idx);
+        }
+        // Navigate the last remaining page to blank so nothing visible
+        if let Some(page) = self.pages.first() {
+            let _ = page.execute(NavigateParams::builder().url("about:blank").build().unwrap()).await;
+        }
+        self.selected_page_idx = 0;
+        Ok(())
+    }
 }
 
 // handler event loop
@@ -692,13 +1017,72 @@ async fn handler_loop(mut handler: Handler) {
     }
 }
 
-// check if chrome is already running (macOS)
+fn profile_base_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            return PathBuf::from(home);
+        }
+    }
+
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+}
+
+fn chrome_debug_profile_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(base) = dirs::data_local_dir() {
+            return base.join("hey-work").join("heywork-chrome");
+        }
+    }
+    profile_base_dir().join(".heywork-chrome")
+}
+
+fn find_chrome_binary() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let p = PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+        return p.exists().then_some(p);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let local = std::env::var("LOCALAPPDATA").ok();
+        let pf = std::env::var("ProgramFiles").ok();
+        let pf86 = std::env::var("ProgramFiles(x86)").ok();
+        let candidates = [
+            local.map(|p| PathBuf::from(p).join("Google/Chrome/Application/chrome.exe")),
+            pf.map(|p| PathBuf::from(p).join("Google/Chrome/Application/chrome.exe")),
+            pf86.map(|p| PathBuf::from(p).join("Google/Chrome/Application/chrome.exe")),
+        ];
+        return candidates.into_iter().flatten().find(|p| p.exists());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+// check if chrome is already running
 fn is_chrome_running() -> bool {
-    std::process::Command::new("pgrep")
-        .args(["-x", "Google Chrome"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    #[cfg(target_os = "windows")]
+    {
+        return std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq chrome.exe"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("chrome.exe"))
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("pgrep")
+            .args(["-x", "Google Chrome"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 }
 
 // restart chrome with debugging enabled (macOS)
@@ -706,10 +1090,19 @@ fn is_chrome_running() -> bool {
 pub async fn restart_chrome_with_debugging() -> Result<BrowserClient> {
     // try graceful quit first
     println!("[browser] Quitting Chrome...");
-    std::process::Command::new("osascript")
-        .args(["-e", "tell application \"Google Chrome\" to quit"])
-        .output()
-        .context("failed to quit Chrome")?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("osascript")
+            .args(["-e", "tell application \"Google Chrome\" to quit"])
+            .output()
+            .context("failed to quit Chrome")?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/IM", "chrome.exe", "/T"])
+            .output();
+    }
 
     // wait for chrome to quit gracefully
     for _ in 0..6 {
@@ -722,6 +1115,11 @@ pub async fn restart_chrome_with_debugging() -> Result<BrowserClient> {
     // if still running, force kill
     if is_chrome_running() {
         println!("[browser] Chrome didn't quit gracefully, force killing...");
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "chrome.exe", "/T"])
+            .output();
+        #[cfg(not(target_os = "windows"))]
         let _ = std::process::Command::new("pkill")
             .args(["-9", "Google Chrome"])
             .output();
@@ -743,17 +1141,29 @@ pub async fn restart_chrome_with_debugging() -> Result<BrowserClient> {
     // using the main profile causes issues with "confirm before quit" dialogs
     // and bot detection on login pages
     println!("[browser] Launching Chrome with debug profile...");
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
-    let user_data_dir = format!("{}/.taskhomie-chrome", home);
-    std::process::Command::new("open")
+    let user_data_dir = chrome_debug_profile_dir();
+    // Launch Chrome binary DIRECTLY instead of via `open -a`
+    // `open -a` ignores --args if Chrome was recently running, causing
+    // anti-detection flags to not be applied
+    let chrome_binary = find_chrome_binary()
+        .ok_or_else(|| anyhow!("failed to locate Google Chrome binary"))?;
+    std::process::Command::new(chrome_binary)
         .args([
-            "-a", "Google Chrome",
-            "--args",
             "--remote-debugging-port=9222",
-            &format!("--user-data-dir={}", user_data_dir),
+            &format!("--user-data-dir={}", user_data_dir.to_string_lossy()),
             "--profile-directory=Default",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=AutomationControlled",
+            "--disable-infobars",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-ipc-flooding-protection",
+            "--password-store=basic",
+            "--use-mock-keychain",
+            "--lang=en-US,en",
         ])
         .spawn()
         .context("failed to launch Chrome")?;
@@ -797,11 +1207,11 @@ pub async fn restart_chrome_with_debugging() -> Result<BrowserClient> {
 
 // try to find existing chrome with debugging enabled
 async fn try_find_existing_chrome() -> Option<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = profile_base_dir();
 
     // check DevToolsActivePort files in known profile locations
     for profile in CHROME_PROFILES {
-        let port_file = PathBuf::from(&home).join(profile).join("Default/DevToolsActivePort");
+        let port_file = home.join(profile).join("Default/DevToolsActivePort");
 
         if let Ok(content) = tokio::fs::read_to_string(&port_file).await {
             let lines: Vec<&str> = content.lines().collect();
@@ -827,22 +1237,34 @@ async fn try_find_existing_chrome() -> Option<String> {
 
 // launch chrome using chromiumoxide with dedicated debug profile
 async fn launch_chrome_with_profile() -> Result<(Browser, Handler)> {
-    let home = std::env::var("HOME").unwrap_or_default();
-
     // chrome requires a NON-DEFAULT user data dir for remote debugging
     // using the default chrome profile path doesn't work - chrome treats it specially
     // so we create a dedicated debug profile that's separate from the user's main profile
-    let user_data_dir = PathBuf::from(&home).join(".taskhomie-chrome");
+    let user_data_dir = chrome_debug_profile_dir();
 
     println!("[browser] Using debug profile: {:?}", user_data_dir);
 
     // disable_default_args() skips puppeteer automation flags that break normal browser usage
     // (like --disable-extensions, --disable-sync, --enable-automation, etc.)
+    // Anti-detection flags prevent Google from identifying automated Chrome
     let config = BrowserConfig::builder()
         .disable_default_args()
         .with_head()
         .user_data_dir(&user_data_dir)
         .viewport(None)
+        // === Anti-Detection Chrome flags ===
+        .arg("--disable-blink-features=AutomationControlled")
+        .arg("--disable-features=AutomationControlled")
+        .arg("--disable-infobars")
+        .arg("--disable-background-timer-throttling")
+        .arg("--disable-backgrounding-occluded-windows")
+        .arg("--disable-renderer-backgrounding")
+        .arg("--disable-ipc-flooding-protection")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--password-store=basic")
+        .arg("--use-mock-keychain")
+        .arg("--lang=en-US,en")
         .build()
         .map_err(|e| anyhow!("failed to build browser config: {}", e))?;
 

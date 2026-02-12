@@ -305,7 +305,7 @@ function SpeakBubble({ msg }: { msg: ChatMessage }) {
           whileTap={{ scale: 0.95 }}
           className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
             isPlaying
-              ? "bg-orange-500/30 border border-orange-400/30 text-orange-300"
+              ? "bg-blue-500/30 border border-blue-400/30 text-blue-300"
               : "bg-white/10 border border-white/20 text-white/60 hover:text-white/80"
           }`}
         >
@@ -313,7 +313,7 @@ function SpeakBubble({ msg }: { msg: ChatMessage }) {
         </motion.button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 mb-0.5">
-            <Volume2 size={12} className="text-orange-300" />
+            <Volume2 size={12} className="text-blue-300" />
             <span className="text-[10px] text-white/40">Voice response</span>
           </div>
           <p className="text-[13px] text-white/80 leading-relaxed select-text">{msg.content}</p>

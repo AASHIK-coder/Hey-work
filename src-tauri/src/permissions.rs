@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -48,6 +49,77 @@ pub struct VoiceSettings {
     pub elevenlabs_voice_id: Option<String>,
 }
 
+const KEYRING_SERVICE: &str = "com.heywork.app";
+
+fn api_env_var_for_service(service: &str) -> Option<&'static str> {
+    match service {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "deepgram" => Some("DEEPGRAM_API_KEY"),
+        "elevenlabs" => Some("ELEVENLABS_API_KEY"),
+        _ => None,
+    }
+}
+
+fn read_api_key_secure(var_name: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(var_name) {
+        if !value.trim().is_empty() {
+            return Some(value);
+        }
+    }
+
+    let entry = keyring::Entry::new(KEYRING_SERVICE, var_name).ok()?;
+    let key = entry.get_password().ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    std::env::set_var(var_name, key.clone());
+    Some(key)
+}
+
+pub fn load_api_key_for_service(service: &str) -> Option<String> {
+    let var_name = api_env_var_for_service(service)?;
+    read_api_key_secure(var_name)
+}
+
+fn app_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let base = dirs::data_dir();
+    #[cfg(not(target_os = "macos"))]
+    let base = dirs::data_local_dir();
+
+    base.unwrap_or_else(|| PathBuf::from(".")).join("hey-work")
+}
+
+fn browser_profile_path() -> PathBuf {
+    app_data_dir().join("heywork-chrome")
+}
+
+fn find_chrome_binary() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let mac_path = PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+        return mac_path.exists().then_some(mac_path);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var("LOCALAPPDATA").ok();
+        let program_files = std::env::var("ProgramFiles").ok();
+        let program_files_x86 = std::env::var("ProgramFiles(x86)").ok();
+        let candidates = [
+            local_app_data.map(|p| PathBuf::from(p).join("Google/Chrome/Application/chrome.exe")),
+            program_files.map(|p| PathBuf::from(p).join("Google/Chrome/Application/chrome.exe")),
+            program_files_x86.map(|p| PathBuf::from(p).join("Google/Chrome/Application/chrome.exe")),
+        ];
+        return candidates.into_iter().flatten().find(|p| p.exists());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 // check all permissions
 #[tauri::command]
 pub fn check_permissions() -> PermissionsCheck {
@@ -82,53 +154,77 @@ fn check_accessibility() -> PermissionStatus {
 #[cfg(target_os = "macos")]
 fn check_screen_recording() -> PermissionStatus {
     // try to capture a 1x1 region - if it fails, we don't have permission
+    // use a thread with timeout to avoid hanging on permission dialogs
     use core_graphics::display::{CGPoint, CGRect, CGSize};
     use core_graphics::window::{
         kCGWindowListOptionOnScreenOnly, CGWindowListCreateImage,
     };
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
-    let rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(1.0, 1.0));
+    let (tx, rx) = mpsc::channel();
+    
+    thread::spawn(move || {
+        let rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(1.0, 1.0));
+        let image = unsafe {
+            CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenOnly,
+                0,
+                0,
+            )
+        };
+        let _ = tx.send(!image.is_null());
+    });
 
-    let image = unsafe {
-        CGWindowListCreateImage(
-            rect,
-            kCGWindowListOptionOnScreenOnly,
-            0,
-            0,
-        )
-    };
-
-    if image.is_null() {
-        PermissionStatus::Denied
-    } else {
-        PermissionStatus::Granted
+    // wait up to 1 second for the check
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(true) => PermissionStatus::Granted,
+        Ok(false) => PermissionStatus::Denied,
+        Err(_) => {
+            // timeout - likely a permission dialog is showing
+            println!("[permissions] Screen recording check timed out - may need permission");
+            PermissionStatus::NotAsked
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
 fn check_microphone() -> PermissionStatus {
-    // check AVCaptureDevice authorization status
-    use std::process::Command;
+    // check AVCaptureDevice authorization status with timeout
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
-    // use swift snippet to check - simpler than objc bindings
-    let output = Command::new("swift")
-        .args([
-            "-e",
-            r#"
-            import AVFoundation
-            let status = AVCaptureDevice.authorizationStatus(for: .audio)
-            switch status {
-            case .authorized: print("granted")
-            case .denied, .restricted: print("denied")
-            case .notDetermined: print("notasked")
-            @unknown default: print("denied")
-            }
-            "#,
-        ])
-        .output();
+    let (tx, rx) = mpsc::channel();
+    
+    thread::spawn(move || {
+        // use swift snippet to check - simpler than objc bindings
+        let result = Command::new("swift")
+            .args([
+                "-e",
+                r#"
+                import AVFoundation
+                let status = AVCaptureDevice.authorizationStatus(for: .audio)
+                switch status {
+                case .authorized: print("granted")
+                case .denied, .restricted: print("denied")
+                case .notDetermined: print("notasked")
+                @unknown default: print("denied")
+                }
+                "#,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+        let _ = tx.send(result);
+    });
 
-    match output {
-        Ok(out) => {
+    // wait up to 2 seconds for swift command
+    match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(out)) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             if stdout.contains("granted") {
                 PermissionStatus::Granted
@@ -138,7 +234,11 @@ fn check_microphone() -> PermissionStatus {
                 PermissionStatus::Denied
             }
         }
-        Err(_) => PermissionStatus::Denied,
+        Ok(Err(_)) => PermissionStatus::Denied,
+        Err(_) => {
+            println!("[permissions] Microphone check timed out");
+            PermissionStatus::Denied
+        }
     }
 }
 
@@ -222,14 +322,31 @@ pub fn open_permission_settings(permission: String) {
 
         let _ = std::process::Command::new("open").arg(url).spawn();
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        let url = match permission.as_str() {
+            "accessibility" => "ms-settings:easeofaccess-keyboard",
+            "screenRecording" => "ms-settings:privacy-screenrecording",
+            "microphone" => "ms-settings:privacy-microphone",
+            _ => return,
+        };
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
 }
 
 // check browser profile status
 #[tauri::command]
 pub fn get_browser_profile_status() -> BrowserProfileStatus {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/Users"));
-    let profile_path = format!("{}/.taskhomie-chrome", home);
-    let path = std::path::Path::new(&profile_path);
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+    
+    let path_buf = browser_profile_path();
+    let profile_path = path_buf.to_string_lossy().to_string();
+    let path = path_buf.as_path();
 
     if !path.exists() {
         return BrowserProfileStatus {
@@ -239,12 +356,27 @@ pub fn get_browser_profile_status() -> BrowserProfileStatus {
         };
     }
 
-    // read cookies db to get domains with sessions
+    // read cookies db in a thread with timeout (can be slow if chrome is running)
     let cookies_db = path.join("Default/Cookies");
-    let sessions = if cookies_db.exists() {
-        read_cookie_domains(&cookies_db).unwrap_or_default()
-    } else {
-        vec![]
+    let (tx, rx) = mpsc::channel();
+    let db_clone = cookies_db.clone();
+    
+    thread::spawn(move || {
+        let sessions = if db_clone.exists() {
+            read_cookie_domains(&db_clone).unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let _ = tx.send(sessions);
+    });
+
+    // wait up to 1 second for cookie reading
+    let sessions = match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(s) => s,
+        Err(_) => {
+            println!("[permissions] Cookie reading timed out - Chrome may be running");
+            vec![]
+        }
     };
 
     BrowserProfileStatus {
@@ -256,7 +388,7 @@ pub fn get_browser_profile_status() -> BrowserProfileStatus {
 
 fn read_cookie_domains(db_path: &std::path::Path) -> Result<Vec<String>, String> {
     // copy db to temp location (chrome locks it)
-    let temp_path = std::env::temp_dir().join("taskhomie_cookies_copy.db");
+    let temp_path = std::env::temp_dir().join("heywork_cookies_copy.db");
     std::fs::copy(db_path, &temp_path).map_err(|e| e.to_string())?;
 
     let conn = rusqlite::Connection::open(&temp_path).map_err(|e| e.to_string())?;
@@ -289,16 +421,15 @@ fn read_cookie_domains(db_path: &std::path::Path) -> Result<Vec<String>, String>
 // clear cookies for a specific domain
 #[tauri::command]
 pub fn clear_domain_cookies(domain: String) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/Users"));
-    let profile_path = format!("{}/.taskhomie-chrome", home);
-    let cookies_db = std::path::Path::new(&profile_path).join("Default/Cookies");
+    let profile_path = browser_profile_path();
+    let cookies_db = profile_path.join("Default/Cookies");
 
     if !cookies_db.exists() {
         return Ok(());
     }
 
     // copy, modify, copy back
-    let temp_path = std::env::temp_dir().join("taskhomie_cookies_edit.db");
+    let temp_path = std::env::temp_dir().join("heywork_cookies_edit.db");
     std::fs::copy(&cookies_db, &temp_path).map_err(|e| e.to_string())?;
 
     let conn = rusqlite::Connection::open(&temp_path).map_err(|e| e.to_string())?;
@@ -322,8 +453,8 @@ pub fn clear_domain_cookies(domain: String) -> Result<(), String> {
 // open browser profile in chrome for manual login
 #[tauri::command]
 pub fn open_browser_profile() -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/Users"));
-    let profile_path = format!("{}/.taskhomie-chrome", home);
+    let profile_path = browser_profile_path();
+    let profile_path_str = profile_path.to_string_lossy().to_string();
 
     // create profile dir if it doesn't exist
     let _ = std::fs::create_dir_all(&profile_path);
@@ -335,7 +466,21 @@ pub fn open_browser_profile() -> Result<(), String> {
                 "-a",
                 "Google Chrome",
                 "--args",
-                &format!("--user-data-dir={}", profile_path),
+                &format!("--user-data-dir={}", profile_path_str),
+                "--profile-directory=Default",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let chrome = find_chrome_binary().ok_or_else(|| "Google Chrome not found on this system".to_string())?;
+        std::process::Command::new(chrome)
+            .args([
+                &format!("--user-data-dir={}", profile_path_str),
                 "--profile-directory=Default",
                 "--no-first-run",
                 "--no-default-browser-check",
@@ -350,8 +495,8 @@ pub fn open_browser_profile() -> Result<(), String> {
 // open browser profile with specific url
 #[tauri::command]
 pub fn open_browser_profile_url(url: String) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/Users"));
-    let profile_path = format!("{}/.taskhomie-chrome", home);
+    let profile_path = browser_profile_path();
+    let profile_path_str = profile_path.to_string_lossy().to_string();
 
     let _ = std::fs::create_dir_all(&profile_path);
 
@@ -362,7 +507,22 @@ pub fn open_browser_profile_url(url: String) -> Result<(), String> {
                 "-a",
                 "Google Chrome",
                 "--args",
-                &format!("--user-data-dir={}", profile_path),
+                &format!("--user-data-dir={}", profile_path_str),
+                "--profile-directory=Default",
+                "--no-first-run",
+                "--no-default-browser-check",
+                &url,
+            ])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let chrome = find_chrome_binary().ok_or_else(|| "Google Chrome not found on this system".to_string())?;
+        std::process::Command::new(chrome)
+            .args([
+                &format!("--user-data-dir={}", profile_path_str),
                 "--profile-directory=Default",
                 "--no-first-run",
                 "--no-default-browser-check",
@@ -378,10 +538,8 @@ pub fn open_browser_profile_url(url: String) -> Result<(), String> {
 // reset browser profile (delete it)
 #[tauri::command]
 pub fn reset_browser_profile() -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/Users"));
-    let profile_path = format!("{}/.taskhomie-chrome", home);
-
-    if std::path::Path::new(&profile_path).exists() {
+    let profile_path = browser_profile_path();
+    if profile_path.exists() {
         std::fs::remove_dir_all(&profile_path).map_err(|e| e.to_string())?;
     }
 
@@ -392,9 +550,9 @@ pub fn reset_browser_profile() -> Result<(), String> {
 #[tauri::command]
 pub fn get_api_key_status() -> ApiKeyStatus {
     ApiKeyStatus {
-        anthropic: std::env::var("ANTHROPIC_API_KEY").is_ok(),
-        deepgram: std::env::var("DEEPGRAM_API_KEY").is_ok(),
-        elevenlabs: std::env::var("ELEVENLABS_API_KEY").is_ok(),
+        anthropic: read_api_key_secure("ANTHROPIC_API_KEY").is_some(),
+        deepgram: read_api_key_secure("DEEPGRAM_API_KEY").is_some(),
+        elevenlabs: read_api_key_secure("ELEVENLABS_API_KEY").is_some(),
     }
 }
 
@@ -440,15 +598,12 @@ fn save_env_var(var_name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-// save api key to .env file
+// save API key to secure OS credential storage
 #[tauri::command]
 pub fn save_api_key(service: String, key: String) -> Result<(), String> {
-    let var_name = match service.as_str() {
-        "anthropic" => "ANTHROPIC_API_KEY",
-        "deepgram" => "DEEPGRAM_API_KEY",
-        "elevenlabs" => "ELEVENLABS_API_KEY",
-        _ => return Err("Unknown service".to_string()),
-    };
-
-    save_env_var(var_name, &key)
+    let var_name = api_env_var_for_service(&service).ok_or_else(|| "Unknown service".to_string())?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, var_name).map_err(|e| e.to_string())?;
+    entry.set_password(&key).map_err(|e| e.to_string())?;
+    std::env::set_var(var_name, key);
+    Ok(())
 }

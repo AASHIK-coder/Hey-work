@@ -1,5 +1,5 @@
 export interface AgentUpdate {
-  update_type: "started" | "thinking" | "response" | "action" | "screenshot" | "finished" | "error" | "bash_result" | "user_message" | "browser_result" | "web_result" | "tool";
+  update_type: "started" | "thinking" | "response" | "action" | "screenshot" | "finished" | "error" | "bash_result" | "user_message" | "browser_result" | "web_result" | "tool" | "skill" | "status";
   message: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
@@ -33,7 +33,7 @@ export interface ChatMessage {
   exitCode?: number;
 }
 
-export type ModelId = "claude-haiku-4-5-20251001" | "claude-sonnet-4-5" | "claude-opus-4-5";
+export type ModelId = "claude-haiku-4-5-20251001" | "claude-sonnet-4-5" | "claude-opus-4-5" | "claude-opus-4-6";
 
 export type AgentMode = "computer" | "browser";
 
@@ -111,4 +111,44 @@ export interface AgentState {
   appendStreamingThinking: (text: string) => void;
   clearStreamingThinking: () => void;
   setConversationId: (id: string | null) => void;
+}
+
+// Agent Swarm Types
+export type SwarmTaskStatus = "Pending" | "Planning" | "Executing" | "Verifying" | "Completed" | "Failed" | "NeedsUserInput" | "Paused";
+export type SwarmSubtaskStatus = "Pending" | "Ready" | "Executing" | "Completed" | "Failed" | "Verifying" | "NeedsRetry" | "Blocked";
+export type AgentType = "Planner" | "Executor" | "Verifier" | "Critic" | "Recovery" | "Coordinator" | "Specialist";
+
+export interface SwarmSubtask {
+  id: string;
+  description: string;
+  agent_type: AgentType;
+  status: SwarmSubtaskStatus;
+  dependencies: string[];
+  retry_count: number;
+  max_retries: number;
+  output?: string;
+  error?: string;
+}
+
+export interface SwarmTask {
+  id: string;
+  description: string;
+  status: SwarmTaskStatus;
+  subtasks: SwarmSubtask[];
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface SwarmEvent {
+  type: "task_started" | "subtask_started" | "subtask_completed" | "subtask_failed" | "verification" | "recovery" | "task_completed";
+  task_id: string;
+  subtask_id?: string;
+  agent?: AgentType;
+  description?: string;
+  output?: string;
+  error?: string;
+  passed?: boolean;
+  score?: number;
+  strategy?: string;
+  success?: boolean;
 }

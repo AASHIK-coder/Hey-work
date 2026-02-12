@@ -1,5 +1,5 @@
 {
-  "name": "taskhomie",
+  "name": "hey-work",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/plugin-shell": "^2",
     "framer-motion": "^11",
     "lucide-react": "^0.468",
@@ -23,15 +23,19 @@
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.9.6",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.182.0",
-    "@vitejs/plugin-react": "^4",
+    "@vitejs/plugin-react-swc": "^4.2.3",
     "autoprefixer": "^10",
+    "esbuild": "^0.27.0",
     "postcss": "^8",
     "tailwindcss": "^3",
     "typescript": "^5",
     "vite": "^6"
+  },
+  "overrides": {
+    "esbuild": "^0.27.0"
   }
 }

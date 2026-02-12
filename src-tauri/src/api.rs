@@ -1,17 +1,18 @@
 use crate::agent::AgentMode;
+use crate::rate_limiter::{RateLimiter, RateLimiterStats};
 use crate::storage::Usage;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 // computer-use-2025-01-24: enables computer_20250124 and bash_20250124 tools
 // interleaved-thinking-2025-05-14: enables extended thinking with tool use for Claude 4 models
-// web-fetch-2025-09-10: enables web_fetch_20250910 server tool
 // context-management-2025-06-27: enables context editing (clear_tool_uses, clear_thinking)
-const BETA_HEADER: &str = "computer-use-2025-01-24,interleaved-thinking-2025-05-14,web-fetch-2025-09-10,context-management-2025-06-27";
+const BETA_HEADER: &str = "computer-use-2025-01-24,interleaved-thinking-2025-05-14,context-management-2025-06-27";
 const API_VERSION: &str = "2023-06-01";
 
 /// display dimensions sent to claude for coordinate mapping.
@@ -19,12 +20,13 @@ const API_VERSION: &str = "2023-06-01";
 const DISPLAY_WIDTH: u32 = 1280;
 const DISPLAY_HEIGHT: u32 = 800;
 
-/// max output tokens for claude response. 16k allows for detailed responses
-/// while staying within typical rate limits
-const MAX_TOKENS: u32 = 16000;
+/// max output tokens - reduced to stay within rate limits
+/// 8k is sufficient for most tasks while being more efficient
+const MAX_TOKENS: u32 = 8000;
 
-/// thinking budget for extended thinking
-const THINKING_BUDGET: u32 = 5000;
+/// thinking budget - reduced for rate limit efficiency
+/// 2k still provides good reasoning without excessive tokens
+const THINKING_BUDGET: u32 = 2000;
 
 #[derive(Error, Debug)]
 pub enum ApiError {
@@ -154,6 +156,15 @@ struct ApiErrorDetail {
     message: String,
 }
 
+// non-streaming response
+#[derive(Debug, Deserialize)]
+struct ApiResponse {
+    id: String,
+    content: Vec<ContentBlock>,
+    usage: Option<Usage>,
+    stop_reason: Option<String>,
+}
+
 // streaming event types
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
@@ -174,6 +185,7 @@ pub struct AnthropicClient {
     client: Client,
     api_key: String,
     model: String,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl AnthropicClient {
@@ -182,7 +194,23 @@ impl AnthropicClient {
             client: Client::new(),
             api_key,
             model,
+            rate_limiter: Arc::new(RateLimiter::new()),
         }
+    }
+
+    /// Get rate limiter stats
+    pub async fn get_rate_limit_stats(&self) -> RateLimiterStats {
+        self.rate_limiter.get_stats().await
+    }
+
+    /// Wait if needed to respect rate limits
+    async fn throttle_if_needed(&self) {
+        self.rate_limiter.throttle_if_needed().await;
+    }
+
+    /// Record usage after API call
+    async fn record_usage(&self, usage: &Usage) {
+        self.rate_limiter.record_usage(usage).await;
     }
 
     fn build_tools(&self, mode: AgentMode) -> Vec<serde_json::Value> {
@@ -218,14 +246,6 @@ impl AnthropicClient {
             "max_uses": 10
         }));
 
-        // web fetch tool - server-side, anthropic executes
-        tools.push(serde_json::json!({
-            "type": "web_fetch_20250910",
-            "name": "web_fetch",
-            "max_uses": 10,
-            "max_content_tokens": 50000
-        }));
-
         // speak tool always included for stable tool caching
         // voice mode system prompt tells the model when to use it
         tools.push(serde_json::json!({
@@ -240,6 +260,52 @@ impl AnthropicClient {
                     }
                 },
                 "required": ["text"]
+            }
+        }));
+
+        // python tool for document generation and data processing
+        tools.push(serde_json::json!({
+            "name": "python",
+            "description": "Execute Python code for professional document generation, data analysis, and automation. All libraries are AUTO-INSTALLED (no pip needed). Creates publication-quality output.\n\nALWAYS USE THESE BUILT-IN HELPERS (they produce professional output):\n\n1. create_professional_report(title, sections, output_path, style)\n   - sections: dict of section_name -> content (str, list, or dict)\n   - output_path: .html, .docx, .pdf, .md, .pptx, .txt\n   - style: 'modern'(default), 'dark', 'executive', 'classic', 'minimal'\n   - Example: create_professional_report('Q4 Report', {'Summary': 'Revenue up 25%', 'Details': ['Point 1', 'Point 2']}, '~/Desktop/report.html', 'modern')\n\n2. create_presentation(title, slides, output_path, theme)\n   - slides: list of dicts with 'title', 'content' (str/list/dict), optional 'notes', 'image_path'\n   - theme: 'modern', 'dark', 'minimal', 'corporate', 'creative'\n   - Auto-generates title + end slides with professional design\n   - Example: create_presentation('AI Strategy', [{'title': 'Overview', 'content': ['Point 1', 'Point 2']}, {'title': 'Data', 'content': {'Metric': 'Value'}}], '~/Desktop/deck.pptx', 'dark')\n\n3. create_advanced_chart(data, chart_type, title, save_path)\n   - chart_type: 'bar', 'line', 'pie', 'donut', 'scatter', 'area', 'histogram'\n   - .html saves as interactive Plotly chart, .png/.svg/.pdf as matplotlib\n   - Example: create_advanced_chart({'Q1': 100, 'Q2': 150}, 'bar', 'Revenue', '~/Desktop/chart.html')\n\n4. create_spreadsheet(data, output_path)\n   - data: dict of sheet_name -> list of dicts (rows)\n   - Professional formatting with styled headers\n   - Example: create_spreadsheet({'Sales': [{'Month': 'Jan', 'Revenue': 100}]}, '~/Desktop/data.xlsx')\n\n5. create_dashboard(title, charts, output_path, layout)\n   - charts: list of dicts with 'title', 'data', 'chart_type'\n   - layout: 'grid' (2-col) or 'stack' (1-col)\n\n6. quick_analyze(data) - Statistical summary of data\n\nWHEN USER ASKS FOR PPTX: Always use create_presentation() with a good theme.\nWHEN USER ASKS FOR REPORT: Always use create_professional_report() with appropriate format.\nWHEN USER ASKS FOR CHART: Always use create_advanced_chart().\nDefault save location: ~/Desktop/ unless user specifies otherwise.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Python code to execute. ALWAYS use the built-in helper functions for documents/charts/presentations."
+                    },
+                    "save_to": {
+                        "type": "string",
+                        "description": "Optional file path to save output."
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "Hint about task for better formatting",
+                        "enum": ["report", "chart", "data", "presentation"]
+                    }
+                },
+                "required": ["code"]
+            }
+        }));
+
+        // deep research tool - Chrome search + full content extraction + LLM synthesis
+        tools.push(serde_json::json!({
+            "name": "deep_research",
+            "description": "Perform deep, Perplexity-like research. Opens Chrome for real Google searches, extracts FULL page content, then uses AI to synthesize a high-quality, professionally formatted report with source citations.\n\nPipeline:\n1. AI generates smart search queries for the topic\n2. Chrome opens Google and searches each query (user sees the magic)\n3. Chrome visits top result pages and extracts full article content\n4. ALL extracted content is sent to AI for intelligent synthesis\n5. AI produces a polished report formatted for the user's specific request\n\nFalls back to Claude's built-in web search if Chrome is unavailable.\n\nUse when user asks to research, investigate, analyze, compare, or needs comprehensive information.\n\nDepth levels:\n- 'quick': 3 searches, reads 3 pages (~20 sec)\n- 'standard': 5 searches, reads 5 pages (~40 sec)\n- 'deep': 8 searches, reads 8 pages (~75 sec)\n\nExample: deep_research({\"query\": \"latest AI agent frameworks 2026\", \"depth\": \"standard\"})",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The research topic or question"
+                    },
+                    "depth": {
+                        "type": "string",
+                        "description": "Research depth: 'quick', 'standard', or 'deep'",
+                        "enum": ["quick", "standard", "deep"]
+                    }
+                },
+                "required": ["query"]
             }
         }));
 
@@ -264,6 +330,10 @@ impl AnthropicClient {
         mode: AgentMode,
         voice_mode: bool,
     ) -> Result<ApiResult, ApiError> {
+        // Show rate limit status (no pre-throttling — we rely on 429 retry instead)
+        let stats: crate::rate_limiter::RateLimiterStats = self.rate_limiter.get_stats().await;
+        println!("[api] {}", stats.format());
+
         // build system prompt as array of blocks for caching
         // base prompt is stable across all requests with same mode
         let base_prompt = match mode {
@@ -316,18 +386,18 @@ impl AnthropicClient {
             },
             context_management: ContextManagement {
                 edits: vec![
-                    // clear thinking blocks from older turns, keep last 2
+                    // clear thinking blocks from older turns, keep only last 1
                     serde_json::json!({
                         "type": "clear_thinking_20251015",
-                        "keep": { "type": "thinking_turns", "value": 2 }
+                        "keep": { "type": "thinking_turns", "value": 1 }
                     }),
-                    // clear tool results when context exceeds 80k tokens, keep last 5
+                    // clear tool results when context exceeds 20k tokens (lower for rate limits)
                     serde_json::json!({
                         "type": "clear_tool_uses_20250919",
-                        "trigger": { "type": "input_tokens", "value": 80000 },
-                        "keep": { "type": "tool_uses", "value": 5 },
-                        "clear_at_least": { "type": "input_tokens", "value": 10000 },
-                        "exclude_tools": ["web_search", "web_fetch"]
+                        "trigger": { "type": "input_tokens", "value": 20000 },
+                        "keep": { "type": "tool_uses", "value": 3 },
+                        "clear_at_least": { "type": "input_tokens", "value": 8000 },
+                        "exclude_tools": ["web_search"]
                     }),
                 ],
             },
@@ -347,6 +417,28 @@ impl AnthropicClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await?;
+            
+            // Check for rate limit error (429 or specific error message)
+            let is_rate_limit = status.as_u16() == 429
+                || body.contains("rate limit")
+                || body.contains("tokens per minute")
+                || body.contains("too many requests");
+            
+            if is_rate_limit {
+                // Record this as usage to trigger throttling
+                self.record_usage(&Usage {
+                    input_tokens: 1000, // Estimate
+                    output_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                }).await;
+                
+                if let Ok(err) = serde_json::from_str::<ApiErrorResponse>(&body) {
+                    return Err(ApiError::Api(format!("Rate limit: {}", err.error.message)));
+                }
+                return Err(ApiError::Api(format!("Rate limit hit (HTTP 429). Will retry automatically.")));
+            }
+            
             if let Ok(err) = serde_json::from_str::<ApiErrorResponse>(&body) {
                 return Err(ApiError::Api(err.error.message));
             }
@@ -636,9 +728,190 @@ impl AnthropicClient {
             }
         }
 
+        // Record usage for rate limiting
+        self.record_usage(&usage).await;
+
         Ok(ApiResult {
             content: content_blocks,
             usage,
+        })
+    }
+
+    /// Simple non-streaming completion for agent swarm
+    pub async fn complete(
+        &self,
+        system: Option<String>,
+        messages: Vec<Message>,
+        tools: Option<Vec<serde_json::Value>>,
+    ) -> Result<ApiResult, ApiError> {
+        // Apply rate limiting
+        self.throttle_if_needed().await;
+
+        let system_blocks = system.map(|s| vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: s,
+            cache_control: None,
+        }]);
+
+        let request_body = ApiRequest {
+            model: self.model.clone(),
+            max_tokens: MAX_TOKENS,
+            system: system_blocks.unwrap_or_default(),
+            tools: tools.unwrap_or_default(),
+            messages,
+            stream: false,
+            thinking: ThinkingConfig {
+                config_type: "enabled".to_string(),
+                budget_tokens: THINKING_BUDGET,
+            },
+            context_management: ContextManagement {
+                edits: vec![],
+            },
+        };
+
+        let response = self
+            .client
+            .post(ANTHROPIC_API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .header("anthropic-beta", BETA_HEADER)
+            .header("content-type", "application/json")
+            .json(&request_body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ApiError::Api(error_text));
+        }
+
+        let api_response: ApiResponse = response.json().await?;
+        
+        let usage = api_response.usage.unwrap_or_default();
+        self.record_usage(&usage).await;
+
+        Ok(ApiResult {
+            content: api_response.content,
+            usage,
+        })
+    }
+
+    /// Perform a multi-turn API call with web search tool enabled.
+    /// Claude will autonomously search the web, read results, and produce
+    /// a cited response. Handles `pause_turn` automatically (re-sends to continue).
+    /// Returns the final synthesized answer with all content blocks.
+    pub async fn complete_with_web_search(
+        &self,
+        system: Option<String>,
+        initial_messages: Vec<Message>,
+        max_searches: u32,
+    ) -> Result<ApiResult, ApiError> {
+        let web_search_tool = serde_json::json!({
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": max_searches
+        });
+
+        let mut messages = initial_messages;
+        let mut total_usage = Usage::default();
+        let mut all_content: Vec<ContentBlock> = Vec::new();
+        let mut iterations = 0;
+        let max_iterations = 10; // safety limit
+
+        loop {
+            iterations += 1;
+            if iterations > max_iterations {
+                println!("[api] web_search: max iterations ({}) reached, returning", max_iterations);
+                break;
+            }
+
+            self.throttle_if_needed().await;
+
+            let system_blocks = system.as_ref().map(|s| vec![SystemBlock {
+                block_type: "text".to_string(),
+                text: s.clone(),
+                cache_control: None,
+            }]);
+
+            let request_body = ApiRequest {
+                model: self.model.clone(),
+                max_tokens: 16000, // larger for research output
+                system: system_blocks.unwrap_or_default(),
+                tools: vec![web_search_tool.clone()],
+                messages: messages.clone(),
+                stream: false,
+                thinking: ThinkingConfig {
+                    config_type: "enabled".to_string(),
+                    budget_tokens: 4000, // more thinking for research
+                },
+                context_management: ContextManagement {
+                    edits: vec![],
+                },
+            };
+
+            println!("[api] web_search iteration {}: sending request ({} messages)", iterations, messages.len());
+
+            let response = self
+                .client
+                .post(ANTHROPIC_API_URL)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", API_VERSION)
+                .header("anthropic-beta", BETA_HEADER)
+                .header("content-type", "application/json")
+                .json(&request_body)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_default();
+                println!("[api] web_search error {}: {}", status, &error_text[..error_text.len().min(200)]);
+
+                // Retry on 429 (rate limited)
+                if status.as_u16() == 429 {
+                    println!("[api] Rate limited during web search, waiting 10s...");
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    continue;
+                }
+                return Err(ApiError::Api(error_text));
+            }
+
+            let api_response: ApiResponse = response.json().await?;
+            
+            let usage = api_response.usage.unwrap_or_default();
+            self.record_usage(&usage).await;
+            total_usage.input_tokens += usage.input_tokens;
+            total_usage.output_tokens += usage.output_tokens;
+
+            let stop_reason = api_response.stop_reason.clone().unwrap_or_default();
+            
+            // Log search activity
+            let search_count = api_response.content.iter().filter(|b| matches!(b, ContentBlock::ServerToolUse { .. })).count();
+            let result_count = api_response.content.iter().filter(|b| matches!(b, ContentBlock::WebSearchToolResult { .. })).count();
+            println!("[api] web_search iteration {}: stop={}, searches={}, results={}", 
+                iterations, stop_reason, search_count, result_count);
+
+            // Collect all content blocks
+            all_content.extend(api_response.content.clone());
+
+            // If stop_reason is "pause_turn", Claude needs to continue — send response back
+            if stop_reason == "pause_turn" {
+                println!("[api] web_search: pause_turn — continuing conversation");
+                // Add Claude's partial response as assistant message, then continue
+                messages.push(Message {
+                    role: "assistant".to_string(),
+                    content: api_response.content,
+                });
+                continue;
+            }
+
+            // Otherwise (end_turn, etc.) — we're done
+            break;
+        }
+
+        Ok(ApiResult {
+            content: all_content,
+            usage: total_usage,
         })
     }
 }
@@ -712,7 +985,7 @@ Output only the rewritten text. No explanations, no quotes, no prefixes.
     Ok(raw_text.to_string())
 }
 
-const SYSTEM_PROMPT: &str = r#"You are taskhomie, a macOS computer control agent. You see the screen, control mouse/keyboard, and run bash.
+const SYSTEM_PROMPT: &str = r#"You are Hey work, a desktop computer control agent. You see the screen, control mouse/keyboard, run bash, and execute Python.
 
 Keep text responses very concise. Focus on doing, not explaining. Use tools on every turn.
 
@@ -720,9 +993,22 @@ Click to focus before typing. Screenshot after actions to verify. If something f
 
 Prefer bash for speed: open -a "App", open https://url, pbcopy/pbpaste, mdfind. Use `sleep N` when waiting.
 
-Use computer tool for visual tasks: clicking UI, reading screen content, filling forms."#;
+For web research, use the deep_research tool. It opens Chrome for real Google searches, extracts full page content, then synthesizes a polished report using AI. The web_search tool is also available for quick inline lookups.
 
-const BROWSER_SYSTEM_PROMPT: &str = r#"You are taskhomie in browser mode. You control Chrome via CDP.
+Use computer tool for visual tasks: clicking UI, reading screen content, filling forms.
+
+**Python Tool** (all libraries AUTO-INSTALLED): Use for ALL document/data tasks:
+- ALWAYS use built-in helpers: create_professional_report(), create_presentation(), create_advanced_chart(), create_spreadsheet(), create_dashboard()
+- Reports: create_professional_report(title, sections_dict, path, style='modern'|'dark'|'executive'|'classic'|'minimal')
+- Presentations: create_presentation(title, slides_list, path, theme='modern'|'dark'|'minimal'|'corporate'|'creative')
+- Charts: create_advanced_chart(data_dict, type='bar'|'line'|'pie'|'donut', title, save_path) - use .html for interactive
+- Excel: create_spreadsheet(data_dict, path) with auto-formatting
+- Dashboard: create_dashboard(title, charts_list, path, layout='grid')
+- Default save to ~/Desktop/ unless user specifies
+
+**Deep Research Tool**: Use for in-depth research tasks. Opens real browser, searches multiple queries, extracts content from pages, synthesizes findings with citations. Use when user asks for research, analysis, comparisons, or comprehensive information gathering."#;
+
+const BROWSER_SYSTEM_PROMPT: &str = r#"You are Hey work in browser mode. You control Chrome via CDP.
 
 Keep text responses very concise. Focus on doing, not explaining. Use tools on every turn.
 
@@ -737,7 +1023,8 @@ Use screenshot when:
 Use bash for file operations.
 
 If browser tools fail with connection errors, Chrome may have been closed. Run this bash command to relaunch it with debugging enabled:
-open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.taskhomie-chrome" --profile-directory=Default --no-first-run
+macOS: open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.heywork-chrome" --profile-directory=Default --no-first-run
+Windows: "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\hey-work\heywork-chrome" --profile-directory=Default --no-first-run
 Then wait a few seconds and retry the browser tool."#;
 
 // voice prompt for opus/sonnet - lighter touch, they follow instructions well

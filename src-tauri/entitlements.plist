@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Allow execution of JIT-compiled code (required for JavaScript/WKWebView) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    
+    <!-- Allow unsigned executable memory -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    
+    <!-- Disable library validation (required for loading system frameworks) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    
+    <!-- Allow debugging (development only, remove for production) -->
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
+</dict>
+</plist>

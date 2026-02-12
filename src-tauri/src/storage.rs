@@ -162,7 +162,7 @@ fn get_db_path() -> PathBuf {
     let base = dirs::data_local_dir();
 
     base.unwrap_or_else(|| PathBuf::from("."))
-        .join("taskhomie")
+        .join("hey-work")
         .join("conversations.db")
 }
 

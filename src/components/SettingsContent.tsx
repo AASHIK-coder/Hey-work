@@ -13,8 +13,10 @@ import {
   X,
   Loader2,
   Mic,
+  RotateCcw,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useAgentStore } from "../stores/agentStore";
 
 interface PermissionsCheck {
   accessibility: "granted" | "denied" | "notAsked" | "notNeeded";
@@ -161,6 +163,8 @@ function ApiKeyRow({
               setEditing(false);
               setValue("");
             }}
+              title="Cancel API key editing"
+              aria-label="Cancel API key editing"
             className="text-white/30 hover:text-white/60"
           >
             <X size={12} />
@@ -190,11 +194,20 @@ function ApiKeyRow({
   );
 }
 
-function LoadingSkeleton() {
+function LoadingSkeleton({ error }: { error?: string }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-3">
-      <Loader2 size={24} className="text-white/30 animate-spin" />
-      <span className="text-[12px] text-white/30">Loading settings...</span>
+      {error ? (
+        <>
+          <span className="text-[12px] text-red-400">{error}</span>
+          <span className="text-[10px] text-white/30">Retrying...</span>
+        </>
+      ) : (
+        <>
+          <Loader2 size={24} className="text-white/30 animate-spin" />
+          <span className="text-[12px] text-white/30">Loading settings...</span>
+        </>
+      )}
     </div>
   );
 }
@@ -208,38 +221,90 @@ const VOICE_PRESETS = [
 const DEFAULT_VOICE_ID = "NOpBlnGInO9m6vDvFkFC";
 
 export default function SettingsContent() {
+  const setApiKeySet = useAgentStore((s) => s.setApiKeySet);
   const [permissions, setPermissions] = useState<PermissionsCheck | null>(null);
   const [profile, setProfile] = useState<BrowserProfileStatus | null>(null);
   const [apiKeys, setApiKeys] = useState<ApiKeyStatus | null>(null);
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings | null>(null);
   const [resetting, setResetting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editingVoiceId, setEditingVoiceId] = useState(false);
   const [voiceIdInput, setVoiceIdInput] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
+    const withTimeout = async <T,>(promise: Promise<T>, label: string, timeoutMs = 8000): Promise<T> => {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      });
+      return Promise.race([promise, timeoutPromise]);
+    };
+
     const check = async () => {
       try {
-        const [perms, prof, keys, voice] = await Promise.all([
-          invoke<PermissionsCheck>("check_permissions"),
-          invoke<BrowserProfileStatus>("get_browser_profile_status"),
-          invoke<ApiKeyStatus>("get_api_key_status"),
-          invoke<VoiceSettings>("get_voice_settings"),
+        if (!cancelled) {
+          setLoadError(null);
+        }
+        
+        const results = await Promise.allSettled([
+          withTimeout(invoke<PermissionsCheck>("check_permissions"), "permissions"),
+          withTimeout(invoke<BrowserProfileStatus>("get_browser_profile_status"), "browser profile"),
+          withTimeout(invoke<ApiKeyStatus>("get_api_key_status"), "api key status"),
+          withTimeout(invoke<VoiceSettings>("get_voice_settings"), "voice settings"),
         ]);
-        setPermissions(perms);
-        setProfile(prof);
-        setApiKeys(keys);
-        setVoiceSettings(voice);
+        if (cancelled) return;
+        
+        const [permsResult, profResult, keysResult, voiceResult] = results;
+        
+        if (permsResult.status === 'fulfilled') {
+          setPermissions(permsResult.value);
+        } else {
+          console.error("Permissions check failed:", permsResult.reason);
+          setLoadError("Permission check failed");
+        }
+        
+        if (profResult.status === 'fulfilled') {
+          setProfile(profResult.value);
+        } else {
+          console.error("Browser profile check failed:", profResult.reason);
+        }
+        
+        if (keysResult.status === 'fulfilled') {
+          setApiKeys(keysResult.value);
+        } else {
+          console.error("API key check failed:", keysResult.reason);
+        }
+        
+        if (voiceResult.status === 'fulfilled') {
+          setVoiceSettings(voiceResult.value);
+        } else {
+          console.error("Voice settings check failed:", voiceResult.reason);
+        }
+
+        const failedCount = results.filter((r) => r.status === "rejected").length;
+        if (failedCount > 0) {
+          setLoadError(`Some settings failed to load (${failedCount}/4). Retrying...`);
+        }
       } catch (e) {
         console.error("Failed to check status:", e);
+        if (!cancelled) {
+          setLoadError("Failed to load settings");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
 
     check();
-    const interval = setInterval(check, 2000);
-    return () => clearInterval(interval);
+    // refresh every 5 seconds
+    const interval = setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   const handleRequestPermission = async (permission: string) => {
@@ -279,6 +344,11 @@ export default function SettingsContent() {
 
   const handleSaveApiKey = async (service: string, key: string) => {
     await invoke("save_api_key", { service, key });
+    if (service === "anthropic") {
+      await invoke("set_api_key", { apiKey: key });
+      localStorage.setItem("heywork_onboarding_complete", "true");
+      setApiKeySet(true);
+    }
     const keys = await invoke<ApiKeyStatus>("get_api_key_status");
     setApiKeys(keys);
   };
@@ -304,7 +374,7 @@ export default function SettingsContent() {
   ];
 
   if (loading) {
-    return <LoadingSkeleton />;
+    return <LoadingSkeleton error={loadError || undefined} />;
   }
 
   return (
@@ -373,7 +443,7 @@ export default function SettingsContent() {
           )}
         </div>
         <p className="text-[10px] text-white/40 mt-2 px-1">
-          Keys are saved to .env in the app directory
+          Keys are saved securely in your OS credential store
         </p>
       </section>
 
@@ -390,6 +460,7 @@ export default function SettingsContent() {
           <div className="flex items-center justify-between">
             <span className="text-[13px] text-white/90">Voice</span>
             <select
+              aria-label="Voice preset"
               value={
                 VOICE_PRESETS.find(v => v.id === voiceSettings?.elevenlabsVoiceId)?.id ||
                 (voiceSettings?.elevenlabsVoiceId ? "custom" : DEFAULT_VOICE_ID)
@@ -446,6 +517,8 @@ export default function SettingsContent() {
                   setEditingVoiceId(false);
                   setVoiceIdInput("");
                 }}
+                title="Cancel custom voice ID"
+                aria-label="Cancel custom voice ID"
                 className="text-white/30 hover:text-white/60"
               >
                 <X size={12} />
@@ -547,6 +620,35 @@ export default function SettingsContent() {
               </kbd>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* reset onboarding */}
+      <section>
+        <div className="flex items-center gap-2 mb-2">
+          <RotateCcw size={14} className="text-white/50" />
+          <h3 className="text-[11px] font-medium uppercase tracking-wider text-white/50">
+            Setup
+          </h3>
+        </div>
+        <div className="rounded-xl bg-white/[0.03] border border-white/5 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[13px] text-white/90">Show Onboarding Again</p>
+              <p className="text-[11px] text-white/40 mt-0.5">
+                Restart the first-time setup flow
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                localStorage.removeItem("heywork_onboarding_complete");
+                window.location.reload();
+              }}
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white/70 hover:text-white text-[11px] transition-colors"
+            >
+              Reset
+            </button>
+          </div>
         </div>
       </section>
     </div>

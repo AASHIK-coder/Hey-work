@@ -9,9 +9,13 @@ mod agent;
 mod api;
 mod bash;
 mod browser;
+mod cognitive;
 mod computer;
+mod deep_research;
 mod panels;
 mod permissions;
+mod python_tool;
+mod rate_limiter;
 mod storage;
 mod voice;
 
@@ -32,7 +36,7 @@ use tauri_nspanel::{
 
 #[cfg(target_os = "macos")]
 tauri_panel! {
-    panel!(TaskhomiePanel {
+    panel!(HeyWorkPanel {
         config: {
             can_become_key_window: true,
             is_floating_panel: true
@@ -60,6 +64,197 @@ static SCREEN_INFO: std::sync::OnceLock<ScreenInfo> = std::sync::OnceLock::new()
 // re-export panel handles from shared module
 #[cfg(target_os = "macos")]
 use panels::{MAIN_PANEL, VOICE_PANEL, BORDER_PANEL};
+
+/// Nuke every native background layer so the panel is truly invisible.
+/// Called AFTER to_panel() on the PanelHandle.
+#[cfg(target_os = "macos")]
+fn make_panel_transparent(panel: &tauri_nspanel::PanelHandle<tauri::Wry>, label: &str) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, AnyClass, Sel};
+    use objc2_app_kit::NSColor;
+
+    let ns_panel = panel.as_panel();
+    unsafe {
+        // --- NSWindow / NSPanel level ---
+        let clear = NSColor::clearColor();
+        let _: () = msg_send![ns_panel, setBackgroundColor: &*clear];
+        let _: () = msg_send![ns_panel, setOpaque: false];
+        let _: () = msg_send![ns_panel, setHasShadow: false];
+        let _: () = msg_send![ns_panel, setTitlebarAppearsTransparent: true];
+        let _: () = msg_send![ns_panel, setMovable: true];
+        let _: () = msg_send![ns_panel, setMovableByWindowBackground: true];
+        let _: () = msg_send![ns_panel, setAlphaValue: 1.0f64];
+
+        // Verify our changes stuck
+        let is_opaque: bool = msg_send![ns_panel, isOpaque];
+        let has_shadow: bool = msg_send![ns_panel, hasShadow];
+        println!("[heywork][{}] Panel: opaque={}, shadow={}", label, is_opaque, has_shadow);
+
+        // --- Content view: make layer-backed and transparent ---
+        let content_view: *mut AnyObject = msg_send![ns_panel, contentView];
+        if !content_view.is_null() {
+            let _: () = msg_send![content_view, setWantsLayer: true];
+            let layer: *mut AnyObject = msg_send![content_view, layer];
+            if !layer.is_null() {
+                let _: () = msg_send![layer, setBackgroundColor: std::ptr::null::<AnyObject>()];
+                let _: () = msg_send![layer, setOpaque: false];
+            }
+            // Walk and nuke all subviews
+            nuke_view_backgrounds(content_view, label);
+        }
+
+        // --- CRITICAL: Swizzle WryWebViewParent.isOpaque -> false ---
+        // NSView.isOpaque defaults to true. When the compositor sees isOpaque=true,
+        // it treats the view as opaque and may fill its frame with a default background.
+        // This swizzle makes WryWebViewParent report non-opaque, allowing transparency.
+        // Also swizzle WryWebView for good measure.
+        for class_to_fix in &[c"WryWebViewParent", c"WryWebView"] {
+            let cls = objc2::ffi::objc_getClass(class_to_fix.as_ptr());
+            if !cls.is_null() {
+                if let Some(sel) = objc2::ffi::sel_registerName(c"isOpaque".as_ptr()) {
+                    let method = objc2::ffi::class_getInstanceMethod(cls.cast(), sel);
+                    if !method.is_null() {
+                        // Replace isOpaque implementation with one that always returns false
+                        unsafe extern "C-unwind" fn is_opaque_false(
+                            _self: *mut std::ffi::c_void,
+                            _cmd: *mut std::ffi::c_void,
+                        ) -> bool {
+                            false
+                        }
+                        let new_imp: unsafe extern "C-unwind" fn() = std::mem::transmute(
+                            is_opaque_false as unsafe extern "C-unwind" fn(
+                                *mut std::ffi::c_void, *mut std::ffi::c_void
+                            ) -> bool
+                        );
+                        objc2::ffi::method_setImplementation(method, new_imp);
+                        println!("[heywork][{}] Swizzled {:?}.isOpaque -> false", label,
+                            std::ffi::CStr::from_ptr(class_to_fix.as_ptr()));
+                    }
+                }
+            }
+        }
+
+        // Also set the panel's minimum size to 1x1 so macOS doesn't enforce a larger size
+        let _: () = msg_send![ns_panel, setContentMinSize: objc2_foundation::NSSize { width: 1.0, height: 1.0 }];
+
+        // Force content view and all children to redraw
+        let _: () = msg_send![ns_panel, setViewsNeedDisplay: true];
+        let _: () = msg_send![ns_panel, invalidateShadow];
+        let _: () = msg_send![ns_panel, display];
+    }
+    println!("[heywork] Panel '{}' transparency applied", label);
+}
+
+/// Recursively walk every view and disable background drawing using MULTIPLE strategies.
+/// Strategy 1: KVC setValue:forKey:"drawsBackground" — same approach Wry uses internally.
+/// Strategy 2: Direct _setDrawsBackground: method call (WKWebView private API).
+/// Strategy 3: setPageBackgroundColor: clearColor (modern WKWebView API).
+/// Strategy 4: setUnderPageBackgroundColor: clearColor (WKWebView).
+/// Strategy 5: Clear CALayer backgrounds on all views.
+#[cfg(target_os = "macos")]
+unsafe fn nuke_view_backgrounds(view: *mut objc2::runtime::AnyObject, label: &str) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, AnyClass, Sel};
+
+    if view.is_null() { return; }
+
+    // Get class name for targeted handling
+    let class_name_ns: *mut AnyObject = msg_send![view, className];
+    let utf8: *const std::ffi::c_char = msg_send![class_name_ns, UTF8String];
+    let class_name = std::ffi::CStr::from_ptr(utf8).to_string_lossy();
+    // WryWebView IS a WKWebView subclass. WryWebViewParent is NOT — it's just an NSView.
+    // Only apply WKWebView-specific strategies to actual WKWebView subclasses.
+    let is_wkwebview = class_name == "WryWebView"
+        || class_name.contains("WKWebView")
+        || (class_name.contains("WebView") && !class_name.contains("Parent"));
+
+    // --- Strategy 1: KVC setValue:forKey:"drawsBackground" with NSNumber(false) ---
+    // This is the EXACT approach Wry uses internally for WKWebView transparency.
+    // Only safe on WKWebView, NOT on plain NSView (would throw NSUnknownKeyException).
+    if is_wkwebview {
+        let ns_number_cls = AnyClass::get(c"NSNumber");
+        if let Some(cls) = ns_number_cls {
+            let cls_ptr = cls as *const AnyClass;
+            let ns_false: *mut AnyObject = msg_send![cls_ptr, numberWithBool: false];
+            let key = objc2_foundation::NSString::from_str("drawsBackground");
+            let _: () = msg_send![view, setValue: ns_false forKey: &*key];
+            println!("[heywork][{}] KVC drawsBackground=false on {}", label, class_name);
+        }
+    }
+
+    // --- Strategy 2: Direct _setDrawsBackground: (WKWebView private API) ---
+    let sel = Sel::register(c"_setDrawsBackground:");
+    let r: bool = msg_send![view, respondsToSelector: sel];
+    if r {
+        let _: () = msg_send![view, _setDrawsBackground: false];
+        if is_wkwebview {
+            println!("[heywork][{}] _setDrawsBackground:false on {}", label, class_name);
+        }
+    }
+
+    // --- Strategy 3: setPageBackgroundColor: (public WKWebView API, macOS 12+) ---
+    if is_wkwebview {
+        let sel_page = Sel::register(c"setPageBackgroundColor:");
+        let r_page: bool = msg_send![view, respondsToSelector: sel_page];
+        if r_page {
+            let clear = objc2_app_kit::NSColor::clearColor();
+            let _: () = msg_send![view, setPageBackgroundColor: &*clear];
+            println!("[heywork][{}] setPageBackgroundColor:clear on {}", label, class_name);
+        }
+    }
+
+    // --- Strategy 4: setUnderPageBackgroundColor: (WKWebView) ---
+    let sel3 = Sel::register(c"setUnderPageBackgroundColor:");
+    let r3: bool = msg_send![view, respondsToSelector: sel3];
+    if r3 {
+        let clear = objc2_app_kit::NSColor::clearColor();
+        let _: () = msg_send![view, setUnderPageBackgroundColor: &*clear];
+    }
+
+    // setDrawsBackground: NO (for NSScrollView, NSTextView, etc. — safe because we check respondsToSelector)
+    let sel2 = Sel::register(c"setDrawsBackground:");
+    let r2: bool = msg_send![view, respondsToSelector: sel2];
+    if r2 { let _: () = msg_send![view, setDrawsBackground: false]; }
+
+    // setOpaque: NO (for views that expose the property)
+    let sel_opaque = Sel::register(c"setOpaque:");
+    let r_opaque: bool = msg_send![view, respondsToSelector: sel_opaque];
+    if r_opaque { let _: () = msg_send![view, setOpaque: false]; }
+
+    // setBackgroundColor: clearColor (on non-WKWebView views)
+    if !is_wkwebview {
+        let sel_bg = Sel::register(c"setBackgroundColor:");
+        let r_bg: bool = msg_send![view, respondsToSelector: sel_bg];
+        if r_bg {
+            let clear = objc2_app_kit::NSColor::clearColor();
+            let _: () = msg_send![view, setBackgroundColor: &*clear];
+        }
+    }
+
+    // NSVisualEffectView — hide it completely
+    if class_name.contains("VisualEffect") {
+        println!("[heywork][{}] Found NSVisualEffectView — hiding!", label);
+        let _: () = msg_send![view, setHidden: true];
+    }
+
+    // --- Strategy 5: Clear CALayer backgrounds on every view ---
+    let _: () = msg_send![view, setWantsLayer: true];
+    let layer: *mut AnyObject = msg_send![view, layer];
+    if !layer.is_null() {
+        let _: () = msg_send![layer, setBackgroundColor: std::ptr::null::<AnyObject>()];
+        let _: () = msg_send![layer, setOpaque: false];
+    }
+
+    // Recurse into subviews
+    let subviews: *mut AnyObject = msg_send![view, subviews];
+    if !subviews.is_null() {
+        let count: usize = msg_send![subviews, count];
+        for i in 0..count {
+            let subview: *mut AnyObject = msg_send![subviews, objectAtIndex: i];
+            nuke_view_backgrounds(subview, label);
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn get_screen_info() -> &'static ScreenInfo {
@@ -129,7 +324,7 @@ async fn run_agent(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let voice = voice_mode.unwrap_or(false);
-    println!("[taskhomie] run_agent called with: {} (model: {}, mode: {:?}, voice: {}, history: {} msgs, screenshot: {}, conv: {:?})",
+    println!("[heywork] run_agent called with: {} (model: {}, mode: {:?}, voice: {}, history: {} msgs, screenshot: {}, conv: {:?})",
         instructions, model, mode, voice, history.len(), context_screenshot.is_some(), conversation_id);
 
     let agent = state.agent.clone();
@@ -140,15 +335,15 @@ async fn run_agent(
             return Err("Agent is already running".to_string());
         }
         if !agent_guard.has_api_key() {
-            return Err("No API key set. Please add ANTHROPIC_API_KEY to .env".to_string());
+            return Err("No API key set. Please add your Anthropic API key in onboarding or Settings.".to_string());
         }
     }
 
     tokio::spawn(async move {
         let agent_guard = agent.lock().await;
         match agent_guard.run(instructions, model, mode, voice, history, context_screenshot, conversation_id, app_handle).await {
-            Ok(_) => println!("[taskhomie] Agent finished"),
-            Err(e) => println!("[taskhomie] Agent error: {:?}", e),
+            Ok(_) => println!("[heywork] Agent finished"),
+            Err(e) => println!("[heywork] Agent error: {:?}", e),
         }
     });
 
@@ -158,13 +353,106 @@ async fn run_agent(
 #[tauri::command]
 fn stop_agent(state: State<'_, AppState>) -> Result<(), String> {
     state.running.store(false, std::sync::atomic::Ordering::SeqCst);
-    println!("[taskhomie] Stop requested");
+    println!("[heywork] Stop requested");
+    Ok(())
+}
+
+#[tauri::command]
+async fn init_agent_swarm(
+    api_key: String,
+    model: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut agent = state.agent.lock().await;
+    agent.init_agent_swarm(api_key, model, app_handle).await;
+    println!("[heywork] Agent Swarm initialized");
     Ok(())
 }
 
 #[tauri::command]
 fn is_agent_running(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.running.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+#[tauri::command]
+async fn get_swarm_task_status(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    use crate::cognitive::agent_swarm::TaskStatus;
+    let agent = state.agent.lock().await;
+    let swarm_guard = agent.agent_swarm.lock().await;
+    if let Some(ref swarm) = *swarm_guard {
+        let status: Option<TaskStatus> = swarm.get_task_status(&task_id).await;
+        match status {
+            Some(s) => Ok(Some(format!("{:?}", s))),
+            None => Ok(None),
+        }
+    } else {
+        Err("Agent Swarm not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn list_active_swarm_tasks(
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, String)>, String> {
+    use crate::cognitive::agent_swarm::TaskStatus;
+    let agent = state.agent.lock().await;
+    let swarm_guard = agent.agent_swarm.lock().await;
+    if let Some(ref swarm) = *swarm_guard {
+        let tasks: Vec<(String, TaskStatus)> = swarm.list_active_tasks().await;
+        Ok(tasks.into_iter().map(|(id, status)| (id, format!("{:?}", status))).collect())
+    } else {
+        Err("Agent Swarm not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn export_skills(state: State<'_, AppState>) -> Result<String, String> {
+    let agent = state.agent.lock().await;
+    let cognitive = agent.cognitive.lock().await;
+    cognitive.skills.export_skills()
+        .map_err(|e| format!("Failed to export skills: {}", e))
+}
+
+#[tauri::command]
+async fn import_skills(json: String, state: State<'_, AppState>) -> Result<usize, String> {
+    let agent = state.agent.lock().await;
+    let mut cognitive = agent.cognitive.lock().await;
+    cognitive.skills.import_skills(&json)
+        .map_err(|e| format!("Failed to import skills: {}", e))
+}
+
+#[tauri::command]
+async fn list_skills(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let agent = state.agent.lock().await;
+    let cognitive = agent.cognitive.lock().await;
+    let skills = cognitive.skills.list_skills();
+    Ok(skills.into_iter().map(|s| serde_json::json!({
+        "id": s.id,
+        "name": s.name,
+        "description": s.description,
+        "pattern": {
+            "intent_keywords": s.pattern.intent_keywords,
+            "app_context": s.pattern.app_context,
+        },
+        "success_rate": s.success_rate,
+        "total_uses": s.total_uses,
+    })).collect())
+}
+
+#[tauri::command]
+async fn confirm_swarm_task(
+    task_id: String,
+    approved: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    println!("[swarm] User {} task {}", if approved { "approved" } else { "rejected" }, task_id);
+    // In a full implementation, this would resume the swarm task
+    // For now, we just log the confirmation
+    Ok(())
 }
 
 #[tauri::command]
@@ -195,6 +483,24 @@ fn set_window_state(app_handle: tauri::AppHandle, width: f64, height: f64, cente
         if let Some(window) = app_handle.get_webview_window("main") {
             let _ = window.set_size(tauri::LogicalSize::new(width, height));
             let _ = window.show();
+        }
+    }
+    Ok(())
+}
+
+// Move main panel to an absolute screen position (for JS-driven drag)
+#[tauri::command]
+fn move_panel_to(x: f64, y: f64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        if let Some(panel) = MAIN_PANEL.get() {
+            let ns_panel = panel.as_panel();
+            unsafe {
+                let origin = objc2_foundation::NSPoint { x, y };
+                let _: () = msg_send![ns_panel, setFrameOrigin: origin];
+            }
         }
     }
     Ok(())
@@ -554,14 +860,16 @@ fn main() {
 
     // init storage
     if let Err(e) = storage::init_db() {
-        eprintln!("[taskhomie] storage init failed: {}", e);
+        eprintln!("[heywork] storage init failed: {}", e);
     }
 
     let running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut agent = Agent::new(running.clone());
 
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        println!("[taskhomie] API key loaded");
+    if let Some(key) = permissions::load_api_key_for_service("anthropic")
+        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+    {
+        println!("[heywork] API key loaded");
         agent.set_api_key(key);
     }
 
@@ -732,7 +1040,7 @@ fn main() {
 
                     // Cmd+Shift+Space - spotlight mode (show centered input)
                     if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::Space) {
-                        println!("[taskhomie] Spotlight mode triggered");
+                        println!("[heywork] Spotlight mode triggered");
                         let _ = app.emit("hotkey-spotlight", ());
 
                         #[cfg(target_os = "macos")]
@@ -750,13 +1058,13 @@ fn main() {
                     if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyS) {
                         if running_for_shortcut.load(std::sync::atomic::Ordering::SeqCst) {
                             running_for_shortcut.store(false, std::sync::atomic::Ordering::SeqCst);
-                            println!("[taskhomie] Stop requested via shortcut");
+                            println!("[heywork] Stop requested via shortcut");
                         }
                     }
 
                     // Cmd+Shift+Q - quit app
                     if shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyQ) {
-                        println!("[taskhomie] Quit requested via shortcut");
+                        println!("[heywork] Quit requested via shortcut");
                         app.exit(0);
                     }
                 })
@@ -792,37 +1100,68 @@ fn main() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_position(PhysicalPosition::new(-1000, -1000));
 
-                    if let Ok(panel) = window.to_panel::<TaskhomiePanel>() {
-                        panel.set_level(PanelLevel::Floating.value());
-                        panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
-                        panel.set_collection_behavior(
-                            CollectionBehavior::new()
-                                .full_screen_auxiliary()
-                                .can_join_all_spaces()
-                                .stationary()
-                                .into(),
-                        );
-                        panel.set_hides_on_deactivate(false);
-                        let _ = MAIN_PANEL.set(panel);
+                    match window.to_panel::<HeyWorkPanel>() {
+                        Ok(panel) => {
+                            println!("[heywork] Main window converted to panel successfully");
+                            panel.set_level(PanelLevel::Floating.value());
+                            panel.set_style_mask(
+                                StyleMask::empty()
+                                    .borderless()
+                                    .nonactivating_panel()
+                                    .into(),
+                            );
+                            panel.set_collection_behavior(
+                                CollectionBehavior::new()
+                                    .full_screen_auxiliary()
+                                    .can_join_all_spaces()
+                                    .stationary()
+                                    .into(),
+                            );
+                            panel.set_hides_on_deactivate(false);
+                            make_panel_transparent(&panel, "main");
+                            let _ = MAIN_PANEL.set(panel);
+                        }
+                        Err(e) => {
+                            eprintln!("[heywork] ERROR: Failed to convert main window to panel: {:?}", e);
+                            // Fallback: show window directly without panel
+                            let _ = window.set_size(tauri::LogicalSize::new(52.0, 52.0));
+                            position_window_top_right(&window, 52.0, 52.0);
+                            let _ = window.set_always_on_top(true);
+                            let _ = window.show();
+                        }
                     }
+                } else {
+                    eprintln!("[heywork] ERROR: Could not find main webview window");
                 }
 
                 // voice panel
                 if let Some(window) = app.get_webview_window("voice") {
                     let _ = window.set_position(PhysicalPosition::new(-1000, -1000));
 
-                    if let Ok(panel) = window.to_panel::<TaskhomiePanel>() {
-                        panel.set_level(PanelLevel::Floating.value());
-                        panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
-                        panel.set_collection_behavior(
-                            CollectionBehavior::new()
-                                .full_screen_auxiliary()
-                                .can_join_all_spaces()
-                                .stationary()
-                                .into(),
-                        );
-                        panel.set_hides_on_deactivate(false);
-                        let _ = VOICE_PANEL.set(panel);
+                    match window.to_panel::<HeyWorkPanel>() {
+                        Ok(panel) => {
+                            println!("[heywork] Voice window converted to panel successfully");
+                            panel.set_level(PanelLevel::Floating.value());
+                            panel.set_style_mask(
+                                StyleMask::empty()
+                                    .borderless()
+                                    .nonactivating_panel()
+                                    .into(),
+                            );
+                            panel.set_collection_behavior(
+                                CollectionBehavior::new()
+                                    .full_screen_auxiliary()
+                                    .can_join_all_spaces()
+                                    .stationary()
+                                    .into(),
+                            );
+                            panel.set_hides_on_deactivate(false);
+                            make_panel_transparent(&panel, "voice");
+                            let _ = VOICE_PANEL.set(panel);
+                        }
+                        Err(e) => {
+                            eprintln!("[heywork] ERROR: Failed to convert voice window to panel: {:?}", e);
+                        }
                     }
                 }
 
@@ -831,31 +1170,87 @@ fn main() {
                     let info = get_screen_info();
                     let _ = window.set_size(tauri::LogicalSize::new(info.width, info.height));
                     let _ = window.set_position(PhysicalPosition::new(0, 0));
-                    println!("[taskhomie] Border panel sized to {}x{}", info.width, info.height);
+                    println!("[heywork] Border panel sized to {}x{}", info.width, info.height);
 
-                    if let Ok(panel) = window.to_panel::<TaskhomiePanel>() {
-                        panel.set_level(PanelLevel::Floating.value());
-                        panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
-                        panel.set_collection_behavior(
-                            CollectionBehavior::new()
-                                .full_screen_auxiliary()
-                                .can_join_all_spaces()
-                                .stationary()
-                                .into(),
-                        );
-                        panel.set_hides_on_deactivate(false);
-                        panel.set_ignores_mouse_events(true);
-                        let _ = BORDER_PANEL.set(panel);
+                    match window.to_panel::<HeyWorkPanel>() {
+                        Ok(panel) => {
+                            println!("[heywork] Border window converted to panel successfully");
+                            panel.set_level(PanelLevel::Floating.value());
+                            panel.set_style_mask(
+                                StyleMask::empty()
+                                    .borderless()
+                                    .nonactivating_panel()
+                                    .into(),
+                            );
+                            panel.set_collection_behavior(
+                                CollectionBehavior::new()
+                                    .full_screen_auxiliary()
+                                    .can_join_all_spaces()
+                                    .stationary()
+                                    .into(),
+                            );
+                            panel.set_hides_on_deactivate(false);
+                            panel.set_ignores_mouse_events(true);
+                            make_panel_transparent(&panel, "border");
+                            let _ = BORDER_PANEL.set(panel);
+                        }
+                        Err(e) => {
+                            eprintln!("[heywork] ERROR: Failed to convert border window to panel: {:?}", e);
+                        }
                     }
                 }
 
                 // show main window at startup (idle size)
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_size(tauri::LogicalSize::new(280.0, 40.0));
-                    position_window_top_right(&window, 280.0, 40.0);
+                    println!("[heywork] Positioning main window at top-right (idle: 52x52)");
+                    let _ = window.set_size(tauri::LogicalSize::new(52.0, 52.0));
+                    position_window_top_right(&window, 52.0, 52.0);
                     if let Some(panel) = MAIN_PANEL.get() {
                         panel.show();
+                        println!("[heywork] Main panel shown via panel.show()");
                     }
+                }
+
+                // Delayed re-apply transparency at multiple intervals.
+                // The WKWebView may reset drawsBackground after initial load,
+                // so we hit it multiple times to be sure.
+                let css_injection = r#"(function(){
+                    var s = document.getElementById('heywork-force-transparent');
+                    if (!s) {
+                        s = document.createElement('style');
+                        s.id = 'heywork-force-transparent';
+                        s.textContent = 'html, body, #root { background: transparent !important; background-color: transparent !important; } html::before, html::after, body::before, body::after { display: none !important; }';
+                        (document.head || document.documentElement).appendChild(s);
+                    }
+                    document.documentElement.style.setProperty('background', 'transparent', 'important');
+                    document.body.style.setProperty('background', 'transparent', 'important');
+                    var root = document.getElementById('root');
+                    if (root) root.style.setProperty('background', 'transparent', 'important');
+                })();"#;
+
+                // Apply at 500ms, 1500ms, and 3000ms
+                for delay_ms in [500u64, 1500, 3000] {
+                    let app_handle = app.handle().clone();
+                    let css_js = css_injection.to_string();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                        // Re-nuke native backgrounds
+                        if let Some(panel) = MAIN_PANEL.get() {
+                            make_panel_transparent(panel, &format!("main-{}ms", delay_ms));
+                        }
+                        if delay_ms == 500 {
+                            if let Some(panel) = VOICE_PANEL.get() {
+                                make_panel_transparent(panel, "voice-delayed");
+                            }
+                        }
+                        // Inject aggressive CSS into all webviews
+                        for label in &["main", "voice", "border"] {
+                            if let Some(w) = app_handle.get_webview_window(label) {
+                                let _ = w.eval(&css_js);
+                            }
+                        }
+                        println!("[heywork] Delayed transparency pass at {}ms complete", delay_ms);
+                    });
                 }
             }
 
@@ -892,14 +1287,15 @@ fn main() {
                                     panel.hide();
                                 }
                             } else {
-                                // show main at idle size
+                                // show main at idle size and emit event so React resets to idle
                                 if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.set_size(tauri::LogicalSize::new(280.0, 40.0));
-                                    position_window_top_right(&window, 280.0, 40.0);
+                                    let _ = window.set_size(tauri::LogicalSize::new(52.0, 52.0));
+                                    position_window_top_right(&window, 52.0, 52.0);
                                 }
                                 if let Some(panel) = MAIN_PANEL.get() {
                                     panel.show();
                                 }
+                                let _ = app.emit("tray:show", ());
                             }
                         }
                         #[cfg(not(target_os = "macos"))]
@@ -930,6 +1326,13 @@ fn main() {
             check_api_key,
             run_agent,
             stop_agent,
+            init_agent_swarm,
+            get_swarm_task_status,
+            list_active_swarm_tasks,
+            export_skills,
+            import_skills,
+            list_skills,
+            confirm_swarm_task,
             is_agent_running,
             debug_log,
             set_window_state,
@@ -937,6 +1340,7 @@ fn main() {
             hide_voice_window,
             hide_main_window,
             show_main_voice_response,
+            move_panel_to,
             set_main_click_through,
             show_border_overlay,
             hide_border_overlay,
