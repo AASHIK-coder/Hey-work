@@ -482,7 +482,11 @@ fn set_window_state(app_handle: tauri::AppHandle, width: f64, height: f64, cente
     {
         if let Some(window) = app_handle.get_webview_window("main") {
             let _ = window.set_size(tauri::LogicalSize::new(width, height));
+            if centered {
+                let _ = window.center();
+            }
             let _ = window.show();
+            let _ = window.set_focus();
         }
     }
     Ok(())
@@ -490,7 +494,7 @@ fn set_window_state(app_handle: tauri::AppHandle, width: f64, height: f64, cente
 
 // Move main panel to an absolute screen position (for JS-driven drag)
 #[tauri::command]
-fn move_panel_to(x: f64, y: f64) -> Result<(), String> {
+fn move_panel_to(app_handle: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use objc2::msg_send;
@@ -501,6 +505,12 @@ fn move_panel_to(x: f64, y: f64) -> Result<(), String> {
                 let origin = objc2_foundation::NSPoint { x, y };
                 let _: () = msg_send![ns_panel, setFrameOrigin: origin];
             }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
         }
     }
     Ok(())
@@ -588,18 +598,26 @@ fn set_main_click_through(ignore: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_border_overlay() {
+fn show_border_overlay(app_handle: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     if let Some(panel) = BORDER_PANEL.get() {
         panel.show();
     }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(window) = app_handle.get_webview_window("border") {
+        let _ = window.show();
+    }
 }
 
 #[tauri::command]
-fn hide_border_overlay() {
+fn hide_border_overlay(app_handle: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     if let Some(panel) = BORDER_PANEL.get() {
         panel.hide();
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(window) = app_handle.get_webview_window("border") {
+        let _ = window.hide();
     }
 }
 
@@ -969,6 +987,14 @@ fn main() {
                                     panel.show();
                                 }
                             }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                if let Some(window) = app.get_webview_window("voice") {
+                                    let _ = window.set_size(tauri::LogicalSize::new(300.0, 300.0));
+                                    let _ = window.center();
+                                    let _ = window.show();
+                                }
+                            }
 
                             // emit recording event with screenshot and mode
                             let _ = app.emit("ptt:recording", serde_json::json!({
@@ -1094,6 +1120,12 @@ fn main() {
                             unsafe {
                                 let _: () = objc2::msg_send![ns_panel, makeKeyAndOrderFront: std::ptr::null::<objc2::runtime::AnyObject>()];
                             }
+                        }
+
+                        #[cfg(not(target_os = "macos"))]
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
 
@@ -1298,9 +1330,26 @@ fn main() {
                 }
             }
 
-            // tray menu with quit option
+            // ── Windows / Linux: show main window at startup ──
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    println!("[heywork] Windows: Initializing main window");
+                    // Make window visible in taskbar so users can find it
+                    let _ = window.set_skip_taskbar(false);
+                    // Start with a reasonable size (frontend will resize via set_window_state)
+                    let _ = window.set_size(tauri::LogicalSize::new(480.0, 500.0));
+                    let _ = window.center();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    println!("[heywork] Windows: Main window shown");
+                }
+            }
+
+            // tray menu with show + quit options
+            let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&quit])?;
+            let tray_menu = Menu::with_items(app, &[&show, &quit])?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -1308,8 +1357,18 @@ fn main() {
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        app.exit(0);
+                    match event.id.as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                            let _ = app.emit("tray:show", ());
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
                     }
                 })
                 .on_tray_icon_event(|tray, event| {

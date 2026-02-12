@@ -366,7 +366,12 @@ impl Agent {
                                 }
                                 Err(restart_err) => {
                                     println!("[agent] Chrome restart failed: {}", restart_err);
-                                    self.emit(&app_handle, "error", "Chrome restart failed. Please manually quit Chrome and restart with: open -a 'Google Chrome' --args --remote-debugging-port=9222", None, None);
+                                    let chrome_msg = if cfg!(target_os = "macos") {
+                                        "Chrome restart failed. Please manually quit Chrome and restart with: open -a 'Google Chrome' --args --remote-debugging-port=9222"
+                                    } else {
+                                        "Chrome restart failed. Please close all Chrome windows and restart Chrome with the --remote-debugging-port=9222 flag."
+                                    };
+                                    self.emit(&app_handle, "error", chrome_msg, None, None);
                                     self.running.store(false, Ordering::SeqCst);
                                     return Err(AgentError::Browser(restart_err));
                                 }

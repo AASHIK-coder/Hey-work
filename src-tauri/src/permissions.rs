@@ -570,11 +570,12 @@ pub fn save_voice_settings(voice_id: String) -> Result<(), String> {
     save_env_var("ELEVENLABS_VOICE_ID", &voice_id)
 }
 
-// helper to save env var to .env file
+// helper to save env var to .env file (stored in app data dir for portability)
 fn save_env_var(var_name: &str, value: &str) -> Result<(), String> {
-    let env_path = std::env::current_dir()
-        .map(|p| p.join(".env"))
-        .unwrap_or_else(|_| std::path::PathBuf::from(".env"));
+    // On Windows, current_dir may be read-only (e.g. C:\Program Files\...).
+    // Always write to app data dir so we have write permissions.
+    let env_path = app_data_dir().join(".env");
+    let _ = std::fs::create_dir_all(env_path.parent().unwrap_or(&env_path));
 
     let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
     let mut lines: Vec<String> = existing.lines().map(String::from).collect();

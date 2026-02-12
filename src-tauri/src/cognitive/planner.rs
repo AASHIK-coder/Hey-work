@@ -98,7 +98,11 @@ impl Planner {
                     SubtaskGenerator {
                         description_template: "Open {app} application".to_string(),
                         action_type: ActionTypeTemplate::Bash {
-                            command_template: "open -a \"{app}\"".to_string(),
+                            command_template: if cfg!(target_os = "windows") {
+                                "start \"\" \"{app}\"".to_string()
+                            } else {
+                                "open -a \"{app}\"".to_string()
+                            },
                         },
                         dependencies: vec![],
                     },
@@ -129,7 +133,11 @@ impl Planner {
                     SubtaskGenerator {
                         description_template: "Open browser".to_string(),
                         action_type: ActionTypeTemplate::Bash {
-                            command_template: "open -a \"Google Chrome\"".to_string(),
+                            command_template: if cfg!(target_os = "windows") {
+                                "start chrome".to_string()
+                            } else {
+                                "open -a \"Google Chrome\"".to_string()
+                            },
                         },
                         dependencies: vec![],
                     },
@@ -367,14 +375,22 @@ impl Planner {
             // Step 3: Verify file exists  
             subtasks.push(self.make_subtask(
                 "Verify the document was created",
-                ActionType::Bash { command: "ls -la ~/Desktop/*.{docx,xlsx,pdf,pptx,html} 2>/dev/null | tail -5".to_string() },
+                ActionType::Bash { command: if cfg!(target_os = "windows") {
+                    "dir %USERPROFILE%\\Desktop\\*.docx %USERPROFILE%\\Desktop\\*.xlsx %USERPROFILE%\\Desktop\\*.pdf 2>nul".to_string()
+                } else {
+                    "ls -la ~/Desktop/*.{docx,xlsx,pdf,pptx,html} 2>/dev/null | tail -5".to_string()
+                } },
                 vec![subtasks[1].id.clone()], 2,
             ));
         } else if is_web_task {
             // Step 1: Open Chrome
             subtasks.push(self.make_subtask(
                 "Launch Google Chrome",
-                ActionType::Bash { command: r#"open -a "Google Chrome""#.to_string() },
+                ActionType::Bash { command: if cfg!(target_os = "windows") {
+                    "start chrome".to_string()
+                } else {
+                    r#"open -a "Google Chrome""#.to_string()
+                } },
                 vec![], 2,
             ));
             
@@ -409,7 +425,11 @@ impl Planner {
             // Step 1: Explore current files
             subtasks.push(self.make_subtask(
                 "List files to understand current state",
-                ActionType::Bash { command: "ls -la && pwd".to_string() },
+                ActionType::Bash { command: if cfg!(target_os = "windows") {
+                    "dir && cd".to_string()
+                } else {
+                    "ls -la && pwd".to_string()
+                } },
                 vec![], 2,
             ));
             
@@ -423,7 +443,7 @@ impl Planner {
             // Step 3: Verify
             subtasks.push(self.make_subtask(
                 "Verify file operation succeeded",
-                ActionType::Bash { command: "ls -la".to_string() },
+                ActionType::Bash { command: if cfg!(target_os = "windows") { "dir".to_string() } else { "ls -la".to_string() } },
                 vec![subtasks[1].id.clone()], 2,
             ));
         } else if is_app_task {
@@ -431,15 +451,25 @@ impl Planner {
             let app_name = extract_app_name(&request_lower);
             
             if request_lower.contains("close") || request_lower.contains("quit") {
+                let quit_cmd = if cfg!(target_os = "windows") {
+                    format!(r#"taskkill /IM "{}.exe" /T"#, app_name)
+                } else {
+                    format!(r#"osascript -e 'tell application "{}" to quit'"#, app_name)
+                };
                 subtasks.push(self.make_subtask(
                     &format!("Quit application: {}", app_name),
-                    ActionType::Bash { command: format!(r#"osascript -e 'tell application "{}" to quit'"#, app_name) },
+                    ActionType::Bash { command: quit_cmd },
                     vec![], 2,
                 ));
             } else {
+                let launch_cmd = if cfg!(target_os = "windows") {
+                    format!(r#"start "" "{}""#, app_name)
+                } else {
+                    format!(r#"open -a "{}""#, app_name)
+                };
                 subtasks.push(self.make_subtask(
                     &format!("Launch application: {}", app_name),
-                    ActionType::Bash { command: format!(r#"open -a "{}""#, app_name) },
+                    ActionType::Bash { command: launch_cmd },
                     vec![], 2,
                 ));
             }

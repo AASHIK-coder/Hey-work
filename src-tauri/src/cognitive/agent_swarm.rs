@@ -1035,7 +1035,11 @@ Return ONLY JSON."#,
             let after_open = &description[5..];
             let app_name = after_open.split_whitespace().next().unwrap_or("");
             if !app_name.is_empty() {
-                return format!(r#"open -a "{}""#, app_name);
+                return if cfg!(target_os = "windows") {
+                    format!(r#"start "" "{}""#, app_name)
+                } else {
+                    format!(r#"open -a "{}""#, app_name)
+                };
             }
         }
         

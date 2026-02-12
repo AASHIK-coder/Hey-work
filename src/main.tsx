@@ -44,6 +44,16 @@ function MainAppGate() {
     };
   }, []);
 
+  // Ensure window is visible and properly sized for non-main states
+  useEffect(() => {
+    if (loading) return;
+    if (!ready) {
+      // Onboarding: show window at a proper size so user can enter API key
+      invoke("set_window_state", { width: 480, height: 500, centered: true }).catch(() => {});
+    }
+    // When ready, MainWindow will call set_window_state itself
+  }, [loading, ready]);
+
   if (loading) {
     return <div className="min-h-screen bg-black text-white flex items-center justify-center">Loading...</div>;
   }

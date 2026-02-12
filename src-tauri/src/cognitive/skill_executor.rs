@@ -296,19 +296,26 @@ impl SkillExecutor {
         
         // Check for "app is running" conditions
         if filled_condition.contains("running") || filled_condition.contains("is open") {
-            // Try to detect if the mentioned app is running via pgrep
+            // Try to detect if the mentioned app is running
             let app_name = filled_condition
                 .replace("is running", "").replace("is open", "")
                 .trim().to_string();
             if !app_name.is_empty() {
-                if let Ok(output) = std::process::Command::new("pgrep")
-                    .args(["-i", "-x", &app_name])
-                    .output()
-                {
-                    let result = output.status.success();
-                    println!("[skill_executor] Condition '{}': {} (pgrep)", condition, result);
-                    return result;
-                }
+                let check_result = if cfg!(target_os = "windows") {
+                    std::process::Command::new("tasklist")
+                        .args(["/FI", &format!("IMAGENAME eq {}.exe", app_name)])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains(&app_name.to_lowercase()))
+                        .unwrap_or(false)
+                } else {
+                    std::process::Command::new("pgrep")
+                        .args(["-i", "-x", &app_name])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                };
+                println!("[skill_executor] Condition '{}': {} (process check)", condition, check_result);
+                return check_result;
             }
         }
         
