@@ -627,6 +627,14 @@ fn trigger_screen_flash() {
         .ok();
 }
 
+#[cfg(not(target_os = "macos"))]
+fn capture_screenshot_fallback() -> Option<String> {
+    match computer::ComputerControl::new() {
+        Ok(control) => control.take_screenshot().ok(),
+        Err(_) => None,
+    }
+}
+
 // hotkey triggered - capture screenshot and return base64
 #[tauri::command]
 fn capture_screen_for_help() -> Result<String, String> {
